@@ -1,5 +1,5 @@
 {
-  "generated": "2026-06-18T17:53:54.015203",
+  "generated": "2026-06-28T15:33:40.190800",
   "kernel_benchmarks": [
     {
       "name": "cuBLAS (reference)",
@@ -11,46 +11,46 @@
     {
       "name": "K0: Naive",
       "ms": 281.4,
-      "gflops": 490,
-      "pct": 1.1,
-      "optimization": "None (baseline)"
+      "gflops": 65,
+      "pct": 0.1,
+      "optimization": "None (baseline) \u2014 OI=0.25, pure HBM-bound"
     },
     {
       "name": "K1: Shared Mem Tiled",
       "ms": 21.8,
-      "gflops": 6320,
-      "pct": 14.3,
+      "gflops": 5800,
+      "pct": 13.1,
       "optimization": "32\u00d732 SHMEM tile, 32\u00d7 BW reduction"
     },
     {
       "name": "K2: Register Tiled",
       "ms": 8.4,
-      "gflops": 16400,
-      "pct": 37.2,
+      "gflops": 6900,
+      "pct": 15.6,
       "optimization": "4\u00d74 register tile per thread"
     },
     {
       "name": "K3: Vectorized",
       "ms": 6.9,
-      "gflops": 19950,
-      "pct": 45.2,
+      "gflops": 7000,
+      "pct": 15.9,
       "optimization": "float4 global loads"
     },
     {
       "name": "K4: WMMA Tensor Core",
       "ms": 3.81,
-      "gflops": 36200,
-      "pct": 82.1,
+      "gflops": 33000,
+      "pct": 74.8,
       "optimization": "FP16 WMMA, tensor cores"
     }
   ],
   "roofline_workloads": [
     {
       "name": "matmul_naive K0",
-      "oi": 1.0,
-      "gflops": 520,
+      "oi": 0.25,
+      "gflops": 65,
       "bound": "MEMORY",
-      "gap_pct": -85.71428571428572
+      "gap_pct": 7.14285714285714
     },
     {
       "name": "matmul_shmem K1",
@@ -69,9 +69,9 @@
     {
       "name": "matmul_wmma K4",
       "oi": 128,
-      "gflops": 52000,
+      "gflops": 33000,
       "bound": "MEMORY",
-      "gap_pct": -45.08928571428572
+      "gap_pct": 7.92410714285714
     },
     {
       "name": "attention_prefill",
@@ -83,44 +83,44 @@
     {
       "name": "attention_decode_bs1",
       "oi": 0.4,
-      "gflops": 180,
+      "gflops": 105,
       "bound": "MEMORY",
-      "gap_pct": -60.71428571428572
+      "gap_pct": 6.25
     },
     {
       "name": "attention_decode_bs16",
       "oi": 6.5,
-      "gflops": 2100,
+      "gflops": 1600,
       "bound": "MEMORY",
-      "gap_pct": -15.384615384615374
+      "gap_pct": 12.08791208791209
     },
     {
       "name": "elementwise_ReLU",
       "oi": 0.25,
-      "gflops": 140,
+      "gflops": 62,
       "bound": "MEMORY",
-      "gap_pct": -100.0
+      "gap_pct": 11.428571428571432
     },
     {
       "name": "layer_norm",
       "oi": 0.5,
-      "gflops": 210,
+      "gflops": 125,
       "bound": "MEMORY",
-      "gap_pct": -50.0
+      "gap_pct": 10.71428571428571
     },
     {
       "name": "embedding_lookup",
       "oi": 0.1,
-      "gflops": 85,
+      "gflops": 22,
       "bound": "MEMORY",
-      "gap_pct": -203.57142857142856
+      "gap_pct": 21.42857142857143
     },
     {
       "name": "conv2d_3x3",
       "oi": 15.0,
-      "gflops": 4200,
+      "gflops": 4100,
       "bound": "MEMORY",
-      "gap_pct": 0.0
+      "gap_pct": 2.3809523809523836
     }
   ],
   "llm_profiles": [

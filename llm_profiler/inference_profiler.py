@@ -332,7 +332,7 @@ class LLMInferenceProfiler:
 
         if not p.fits_on_gpu:
             recs.append(
-                f"🔴 MODEL DOESN'T FIT: {p.total_vram_gb:.1f} GB required, "
+                f"[ERROR] MODEL DOES NOT FIT: {p.total_vram_gb:.1f} GB required, "
                 f"{gpu.vram_gb} GB available. Need {p.num_gpus_required} GPUs. "
                 f"Solutions: tensor parallelism (split weight matrices across GPUs), "
                 f"pipeline parallelism (split layers), or quantize to int4/fp8."
@@ -340,14 +340,14 @@ class LLMInferenceProfiler:
         else:
             headroom = gpu.vram_gb - p.total_vram_gb
             recs.append(
-                f"✅ MODEL FITS with {headroom:.1f} GB headroom. "
+                f"Model fits with {headroom:.1f} GB headroom. "
                 f"({p.weights_gb:.1f}GB weights + {p.kv_cache_gb:.1f}GB KV + "
                 f"{p.activations_gb:.1f}GB activations)"
             )
 
         if p.decode_bound == 'MEMORY':
             recs.append(
-                f"🟡 DECODE IS MEMORY-BOUND (OI={p.decode_oi:.2f} < ridge={p.ridge_point:.0f}). "
+                f"Decode is memory-bound (OI={p.decode_oi:.2f} < ridge={p.ridge_point:.0f}). "
                 f"Classic small-batch LLM symptom. GPU bandwidth ({gpu.bandwidth_gbps} GB/s) "
                 f"is the bottleneck, NOT compute. "
                 f"Fix: increase batch size (saturates BW), use continuous batching, "
@@ -356,7 +356,7 @@ class LLMInferenceProfiler:
 
         if p.batch_size == 1:
             recs.append(
-                f"🟡 BATCH SIZE = 1: GPU utilization is very low. "
+                f"Batch size = 1: GPU utilization is very low. "
                 f"In decode, each step loads {p.weights_gb:.1f}GB of weights "
                 f"to compute just {p.decode_flops_per_tok/1e9:.1f}B FLOPs. "
                 f"Try batch_size=16: same weights loaded, 16× the throughput."
@@ -364,7 +364,7 @@ class LLMInferenceProfiler:
 
         if p.kv_cache_gb > p.weights_gb:
             recs.append(
-                f"🟡 KV CACHE ({p.kv_cache_gb:.1f}GB) EXCEEDS WEIGHTS ({p.weights_gb:.1f}GB). "
+                f"KV cache ({p.kv_cache_gb:.1f}GB) EXCEEDS WEIGHTS ({p.weights_gb:.1f}GB). "
                 f"Context length {p.context_len} with batch {p.batch_size} is memory-heavy. "
                 f"Consider: GQA (Llama-3 uses 8 KV heads instead of 32), "
                 f"sliding window attention (Mistral), or PagedAttention (vLLM)."
@@ -372,21 +372,21 @@ class LLMInferenceProfiler:
 
         if p.prefill_latency_ms > 1000:
             recs.append(
-                f"🟡 LONG PREFILL: {p.prefill_latency_ms:.0f}ms for {p.context_len}-token context. "
+                f"Long prefill: {p.prefill_latency_ms:.0f}ms for {p.context_len}-token context. "
                 f"This is O(N²) in sequence length. At 2× context → 4× prefill time. "
                 f"For real-time applications, chunk prefill into smaller pieces (speculative prefill)."
             )
 
         if p.decode_tokens_per_sec_batch < 10:
             recs.append(
-                f"🔴 LOW DECODE THROUGHPUT: {p.decode_tokens_per_sec_batch:.1f} tok/s. "
+                f"Low decode throughput: {p.decode_tokens_per_sec_batch:.1f} tok/s. "
                 f"Below interactive speed (30+ tok/s for text streaming). "
                 f"Consider: int8 quantization (2× weights reduced → 2× throughput), "
                 f"speculative decoding (draft model), or continuous batching."
             )
 
         recs.append(
-            f"💰 COST: ${p.cost_per_1M_input_tokens:.2f}/1M input tokens, "
+            f"Cost: ${p.cost_per_1M_input_tokens:.2f}/1M input tokens, "
             f"${p.cost_per_1M_output_tokens:.2f}/1M output tokens "
             f"on {gpu.name} @ ${gpu.cost_per_hour_usd}/hr. "
             f"({'×' + str(p.num_gpus_required) + ' GPUs' if p.num_gpus_required > 1 else '1 GPU'})"
@@ -521,46 +521,46 @@ def visualize_inference_profile(
 
 def print_profile_report(p: InferenceProfile) -> None:
     """Print a human-readable profile report."""
-    print(f"""
-╔══════════════════════════════════════════════════════════════════╗
-║  LLM INFERENCE PROFILE
-║  Model: {p.model.name:<20}  GPU: {p.gpu.name}
-║  Precision: {p.precision:<8}  Context: {p.context_len:<6}  Batch: {p.batch_size}
-╠══════════════════════════════════════════════════════════════════╣
-║  VRAM BREAKDOWN
-║    Weights:       {p.weights_gb:>6.1f} GB
-║    KV Cache:      {p.kv_cache_gb:>6.1f} GB
-║    Activations:   {p.activations_gb:>6.1f} GB
-║    Overhead:      {p.framework_overhead_gb:>6.1f} GB
-║    TOTAL:         {p.total_vram_gb:>6.1f} GB  ({'✅ FITS' if p.fits_on_gpu else f'❌ NEED {p.num_gpus_required} GPUs'})
-╠══════════════════════════════════════════════════════════════════╣
-║  PERFORMANCE
-║    Prefill:  {p.prefill_latency_ms:>7.1f} ms   ({p.prefill_bound}-BOUND, OI={p.prefill_oi:.1f})
-║    Decode:   {p.decode_latency_ms_per_tok:>7.1f} ms/tok ({p.decode_bound}-BOUND, OI={p.decode_oi:.2f})
-║    Throughput: {p.decode_tokens_per_sec_batch:>6.0f} tok/s (batch total)
-║    Ridge point: {p.ridge_point:.0f} FLOP/Byte
-╠══════════════════════════════════════════════════════════════════╣
-║  COST
-║    Input:  ${p.cost_per_1M_input_tokens:>7.2f} / 1M tokens
-║    Output: ${p.cost_per_1M_output_tokens:>7.2f} / 1M tokens
-╠══════════════════════════════════════════════════════════════════╣
-║  RECOMMENDATIONS
-""")
+    fits_str = "fits" if p.fits_on_gpu else f"need {p.num_gpus_required} GPUs"
+    print()
+    print(f"LLM Inference Profile")
+    print(f"  Model:     {p.model.name}  |  GPU: {p.gpu.name}")
+    print(f"  Precision: {p.precision}  |  Context: {p.context_len}  |  Batch: {p.batch_size}")
+    print()
+    print("VRAM Breakdown")
+    print(f"  Weights:       {p.weights_gb:>6.1f} GB")
+    print(f"  KV Cache:      {p.kv_cache_gb:>6.1f} GB")
+    print(f"  Activations:   {p.activations_gb:>6.1f} GB")
+    print(f"  Overhead:      {p.framework_overhead_gb:>6.1f} GB")
+    print(f"  Total:         {p.total_vram_gb:>6.1f} GB  ({fits_str})")
+    print()
+    print("Performance")
+    print(f"  Prefill:     {p.prefill_latency_ms:>7.1f} ms   ({p.prefill_bound}-bound, OI={p.prefill_oi:.1f} FLOP/Byte)")
+    print(f"  Decode:      {p.decode_latency_ms_per_tok:>7.1f} ms/tok ({p.decode_bound}-bound, OI={p.decode_oi:.2f} FLOP/Byte)")
+    print(f"  Throughput:  {p.decode_tokens_per_sec_batch:>6.0f} tok/s (batch total)")
+    print(f"  Ridge point: {p.ridge_point:.0f} FLOP/Byte")
+    print()
+    print("Cost")
+    print(f"  Input:  ${p.cost_per_1M_input_tokens:>7.2f} / 1M tokens")
+    print(f"  Output: ${p.cost_per_1M_output_tokens:>7.2f} / 1M tokens")
+    print()
+    print("Recommendations")
     for rec in p.recommendations:
-        # word wrap at 60 chars
-        words = rec.split()
+        # Strip leading emoji if present
+        clean = rec.strip()
+        words = clean.split()
         line, lines = '', []
         for w in words:
-            if len(line) + len(w) > 58:
+            if len(line) + len(w) > 70:
                 lines.append(line)
                 line = w
             else:
                 line += (' ' if line else '') + w
         if line: lines.append(line)
-        for l in lines:
-            print(f"║    {l}")
-        print("║")
-    print("╚══════════════════════════════════════════════════════════════════╝")
+        for i, l in enumerate(lines):
+            prefix = "  - " if i == 0 else "    "
+            print(f"{prefix}{l}")
+        print()
 
 
 if __name__ == '__main__':

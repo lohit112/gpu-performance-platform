@@ -1,7 +1,6 @@
 # GPU Performance Engineering Platform
 
-> **"From spec-sheet analysis to silicon-level optimization"**  
-> CUDA kernel engineering, empirical roofline modeling, Nsight Compute profiling, and first-principles LLM inference analysis — built from scratch on T4 GPU.
+CUDA kernel benchmarking, roofline modeling, Nsight Compute profiling, and LLM inference analysis — built on T4/P100 GPU.
 
 ![Python](https://img.shields.io/badge/Python-3.10+-3d9abf?style=flat-square)
 ![CUDA](https://img.shields.io/badge/CUDA-12.1-76b900?style=flat-square)
@@ -12,13 +11,28 @@
 
 ## What this is
 
-A GPU performance engineering platform built from first principles. Every abstraction is explained, every number is derivable, and every result is physically consistent with the hardware.
+This project started as a CUDA learning exercise and grew into a small benchmarking and analysis platform. The goal was to understand GPU performance at the level NVIDIA engineers think about it — not just "run a benchmark and report GFLOPS," but trace *why* a kernel performs the way it does and what the hardware is actually doing.
 
-The architecture follows how NVIDIA engineers reason about GPU performance:
+The architecture follows the reasoning loop I found most useful:
 
 ```
 Hardware Limits → Roofline Model → Kernel Profiling → Optimization → Validation
 ```
+
+---
+
+## Known Limitations
+
+This project focuses on CUDA optimization techniques rather than reproducing state-of-the-art GEMM implementations.
+
+Current limitations:
+
+- `cp.async` (software pipelining for Ampere+) is not implemented in K3
+- K3 vectorizes global loads but computation remains scalar; a full register-tiled + vectorized kernel would score higher
+- Benchmarks validated primarily on NVIDIA T4; sm_86/sm_90 behavior may differ
+- Nsight Compute profiling (`ncu --csv`) is blocked on Colab T4 due to libcuda stub restrictions in virtualized environments — the nsight module ships with calibrated demo data and a real-CSV path for environments where `ncu` works (Kaggle P100 works; bare metal works)
+- Hopper-specific features (TMA, WGMMA) are outside the current scope
+- LLM latency estimates assume MFU=0.35 (reasonable for PyTorch + FlashAttention); real numbers vary ±20%
 
 ---
 
@@ -33,6 +47,18 @@ Hardware Limits → Roofline Model → Kernel Profiling → Optimization → Val
 | Llama-7B decode OI (bs=1) | 0.4 FLOP/Byte | Memory-bound: compute is idle |
 | Llama-7B decode throughput (bs=16) | ~890 tok/s | 32× better than bs=1 |
 | Prefill scaling exponent | 1.94 | Confirms O(N²) attention |
+
+---
+
+## Changelog
+
+### v2
+
+- Replaced static benchmark tables with real benchmark execution via subprocess runner
+- Added dynamic parsing of `matmul_bench` output — no hardcoded GFLOPS values
+- Implemented true `float4` vectorized loads in K3 (original version described them in comments but didn't use the `float4` type)
+- Added FP32→FP16 conversion path for WMMA kernel
+- Improved ncu CSV parser to handle metric name variations across ncu versions
 
 ---
 
@@ -63,23 +89,25 @@ ncu --set full -o matmul_profile ./matmul_bench
 
 ---
 
-### 2. `roofline/roofline_model.py` — Empirical Roofline Model
+### 2. `roofline/roofline_model.py` — Roofline Model
+
+The module establishes hardware ceilings from calibration kernels (not spec sheets), then places each kernel at its measured `(FLOPs/Byte, GFLOPS)` operating point.
 
 The key distinction from naive "arithmetic intensity" calculations:
 
-**❌ What most student projects do:**
+**What most student projects do:**
 ```python
 arithmetic_intensity = fp32_tflops / bandwidth_gbps  # hardware ridge point, not a workload analysis
 ```
 
-**✅ What this module does:**
+**What this module does:**
 1. Establishes hardware ceilings from calibration kernels (not spec sheets)
 2. Collects per-kernel FLOPs + DRAM bytes (via `ncu` metrics)
 3. Places each kernel at `(FLOPs/Byte, GFLOPS)` on the chart
 4. Classifies as compute/memory/mixed bound with ±20% mixed zone around the ridge
 5. Generates specific optimization advice based on distance from ceiling
 
-All demo workload values are physically consistent with T4 hardware — every `achieved_gflops` is ≤ `min(OI × bandwidth, peak_compute)`.
+Demo workload values are calibrated to be physically consistent with T4 hardware — every `achieved_gflops` satisfies `achieved ≤ min(OI × bandwidth, peak_compute)`.
 
 ```python
 from roofline.roofline_model import HardwareRoof, build_demo_workloads, plot_roofline
@@ -113,18 +141,20 @@ Rule-based recommendation engine maps each pattern to a specific fix:
 # With real ncu output:
 report = NsightReport.from_csv('ncu_raw.csv')
 
-# Without GPU (demo mode with realistic synthetic data):
+# Without GPU (demo mode with calibrated synthetic data):
 report = NsightReport._demo_report()
 visualize_nsight_report(report, 'nsight_analysis.png')
 ```
 
+**Note on ncu availability:** Profiling with `ncu` requires a real CUDA driver (not the stub used in Colab). Kaggle's P100 tier and bare-metal instances work fine. The demo mode is explicitly labeled in all outputs.
+
 ---
 
-### 4. `llm_profiler/inference_profiler.py` — First-Principles LLM Inference
+### 4. `llm_profiler/inference_profiler.py` — LLM Inference Analysis
 
-The core insight this module proves from math:
+Derives prefill/decode behavior from first principles rather than running inference directly. The core result this module proves from math:
 
-**LLM decode at batch=1 is fundamentally memory-bandwidth-limited on every GPU today.**
+**LLM decode at batch=1 is memory-bandwidth-limited on every GPU today.**
 
 ```
 Bytes loaded per decode step  = model_weights + KV_cache  (~14 GB for Llama-7B FP16)
@@ -135,7 +165,7 @@ T4 ridge point (FP16)         = 65 TFLOPS / 280 GB/s ≈ 232 FLOP/Byte
 0.36 << 232 → deeply memory-bound, compute is idle
 ```
 
-Fix: batch=16 loads the same 14 GB of weights but processes 16 tokens simultaneously → 32× throughput improvement.
+Batching to 16 loads the same 14 GB of weights but processes 16 tokens simultaneously → ~32× throughput improvement.
 
 **Supported models:** GPT-2, GPT-2 XL, Llama-2 7B/13B/70B, Llama-3 8B/70B, Mistral 7B, Mixtral 8×7B, GPT-4 (estimate)
 
@@ -147,7 +177,7 @@ Fix: batch=16 loads the same 14 GB of weights but processes 16 tokens simultaneo
 
 ### 5. `report_gen/report_generator.py` — Automated Report Generation
 
-Runs all analyses → generates Markdown + HTML + JSON:
+Runs all analyses and generates Markdown + HTML + JSON:
 
 ```bash
 python main.py --module report
@@ -204,7 +234,7 @@ gpu_platform_v2/
 ├── profiling/
 │   └── nsight_profiler.py       ← ncu CSV parser + visualization + recommendations
 ├── roofline/
-│   └── roofline_model.py        ← Empirical roofline with workload classification
+│   └── roofline_model.py        ← Roofline model with workload classification
 ├── llm_profiler/
 │   └── inference_profiler.py    ← First-principles VRAM + latency + cost model
 ├── report_gen/
@@ -212,6 +242,16 @@ gpu_platform_v2/
 ├── main.py                      ← Unified entry point
 └── requirements.txt
 ```
+
+---
+
+## Development Notes
+
+The initial version used hardcoded benchmark values to develop the visualization pipeline before having real GPU access. That was replaced with a subprocess-based benchmark runner that executes the compiled CUDA binary and parses its output. The benchmark table in the README reflects real T4 measurements from that runner.
+
+Similarly, the original K3 kernel described `float4` loads in comments but used scalar loads in the actual code. The current version uses the `float4` type for global memory accesses.
+
+Nsight profiling on Colab T4 failed because the environment uses a libcuda stub driver — `ncu` exits with an error about driver version mismatches. Those runs were excluded and the nsight module falls back to calibrated demo data in that environment. Kaggle P100 works correctly with `ncu`.
 
 ---
 
@@ -231,12 +271,13 @@ gpu_platform_v2/
 
 ---
 
-## Limitations
+## TODOs
 
-- CUDA kernels require `nvcc` and a CUDA GPU. All Python modules run without one.
-- Nsight demo data is synthetic but calibrated to real T4 measurements.
-- LLM latency estimates assume MFU=0.35 (validated for PyTorch + FlashAttention). Real numbers vary ±20%.
-- K4 WMMA requires sm_70+ (Volta or newer). T4 is sm_75 ✓.
+- Add `cp.async` path for sm80+ (Ampere async copy pipeline)
+- Benchmark larger tile sizes (64×64, 128×128) to find occupancy/tile tradeoff
+- Add CUTLASS comparison — understand the gap between K4 and cuBLAS at the instruction level
+- Occupancy tuning via `__launch_bounds__` on K2/K3
+- Run `ncu --set full` on real hardware and feed actual counter data into the nsight module
 
 ---
 

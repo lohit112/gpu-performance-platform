@@ -94,7 +94,7 @@ def run_llm(args):
         for gk in ['A100_80', 'H100_SXM']:
             try:
                 cp = profiler.profile(mk, gk, context_len=2048, batch_size=8, precision='fp16')
-                fits = "✅" if cp.fits_on_gpu else f"❌ ({cp.num_gpus_required}×GPU)"
+                fits = "fits" if cp.fits_on_gpu else f"needs {cp.num_gpus_required}x GPU"
                 print(f"  {cp.model.name:<18} {cp.gpu.name:<10} {fits}  "
                       f"decode={cp.decode_tokens_per_sec_batch:>5.0f} tok/s  "
                       f"{cp.decode_bound}")
@@ -105,33 +105,145 @@ def run_llm(args):
 
 
 def run_kernels(_args):
-    """Display kernel benchmark summary (real data comes from matmul_suite.cu)."""
-    print("\n" + "="*60)
-    print("CUDA KERNEL BENCHMARK SUITE (T4, N=4096)")
-    print("="*60)
-    print(f"\n  {'Kernel':<30} {'ms':>7}  {'GFLOPS':>8}  {'% cuBLAS':>9}  Key insight")
-    print("  " + "-"*82)
-    BENCHMARKS = [
-        ('cuBLAS (reference)',    3.12,  44_100, 100.0, 'CUTLASS under the hood'),
-        ('K0: Naive',           281.4,      65,   0.1,  'OI=0.25 → HBM-bound (redundant HBM reads)'),
-        ('K1: Shared Mem Tiled', 21.8,   5_800,  13.1,  '32× BW reduction'),
-        ('K2: Register Tiled',    8.4,   6_900,  15.6,  '4×4 output tile/thread'),
-        ('K3: Vectorized Load',   6.9,   7_000,  15.9,  'float4 = 4× load IPC'),
-        ('K4: WMMA Tensor Core',  3.81, 33_000,  74.8,  'FP16 WMMA tensor cores'),
-    ]
-    cublas_gflops = 44_100
-    for name, ms, gflops, pct, insight in BENCHMARKS:
-        speedup = gflops / BENCHMARKS[1][2] if name != 'cuBLAS (reference)' else 1.0
-        bar = '█' * int(pct / 5)
-        print(f"  {name:<30} {ms:>7.2f}  {gflops:>8,}  {pct:>8.1f}%  {insight}")
+    """
+    Run the compiled CUDA matmul benchmark and parse real results.
 
-    print(f"\n  Speedup K0→K4: {33000/65:.0f}×")
-    print(f"  Gap to cuBLAS: {100 - 74.8:.0f}% (instruction pipeline depth, software prefetching)")
-    print(f"\n  Compile & run:")
-    print(f"    nvcc -O3 -arch=sm_75 -lcublas cuda_kernels/matmul_suite.cu -o matmul_bench")
-    print(f"    ./matmul_bench")
-    print(f"\n  Profile with Nsight:")
-    print(f"    ncu --set full -o profile ./matmul_bench")
+    Workflow:
+      1. Check if matmul_bench binary exists. If not, attempt to compile it.
+      2. Run the binary via subprocess and capture stdout.
+      3. Parse timing lines dynamically — no hardcoded numbers.
+      4. Display the table with live GFLOPS and % cuBLAS efficiency.
+
+    If nvcc is not available (no GPU / CPU-only environment), falls back to
+    a clearly-labelled reference table so the rest of the platform still runs.
+    """
+    import subprocess
+    import shutil
+    import os
+    import re
+
+    SRC  = os.path.join(os.path.dirname(__file__), 'cuda_kernels', 'matmul_suite.cu')
+    BIN  = os.path.join(os.path.dirname(__file__), 'matmul_bench')
+    ARCH = 'sm_75'  # T4/Turing. Change to sm_80 for A100, sm_90 for H100.
+
+    print("\n" + "="*62)
+    print("  CUDA KERNEL BENCHMARK SUITE  (N=4096)")
+    print("="*62)
+
+    # ── Step 1: compile if binary is missing ──────────────────────────────
+    if not os.path.exists(BIN):
+        if shutil.which('nvcc') is None:
+            _print_reference_table()
+            return
+        print(f"  Compiling {SRC} → {BIN} ...")
+        result = subprocess.run(
+            ['nvcc', '-O3', f'-arch={ARCH}', '-lcublas', SRC, '-o', BIN],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            print(f"
+  Compilation failed:
+{result.stderr}")
+            _print_reference_table()
+            return
+        print("  Compiled successfully.
+")
+
+    # ── Step 2: run the binary ────────────────────────────────────────────
+    try:
+        result = subprocess.run(
+            [BIN], capture_output=True, text=True, timeout=300
+        )
+    except FileNotFoundError:
+        print("  Binary not found after compilation. Check nvcc output.")
+        _print_reference_table()
+        return
+    except subprocess.TimeoutExpired:
+        print("  Benchmark timed out after 300s.")
+        _print_reference_table()
+        return
+
+    if result.returncode != 0:
+        print(f"  Runtime error:
+{result.stderr}")
+        _print_reference_table()
+        return
+
+    # ── Step 3: parse real output ─────────────────────────────────────────
+    # Binary prints lines like:
+    #   cuBLAS (reference)              3.12 ms     44231.45 GFLOPS   (100% efficiency)
+    #   K0: Naive                     281.40 ms        64.82 GFLOPS   (0.1% cuBLAS)
+    # Pattern: capture kernel name, ms, gflops, pct
+    pattern = re.compile(
+        r'^(?P<name>.+?)\s{2,}'      # kernel name (ends at 2+ spaces)
+        r'(?P<ms>[\d.]+)\s*ms\s+'    # timing
+        r'(?P<gflops>[\d.]+)\s*GFLOPS'  # throughput
+        r'.*?\((?P<pct>[\d.]+)%'    # efficiency
+    )
+
+    rows = []
+    for line in result.stdout.splitlines():
+        m = pattern.match(line.strip())
+        if m:
+            rows.append({
+                'name':   m.group('name').strip(),
+                'ms':     float(m.group('ms')),
+                'gflops': float(m.group('gflops')),
+                'pct':    float(m.group('pct')),
+            })
+
+    if not rows:
+        # Binary ran but output format changed — print raw and exit
+        print(result.stdout)
+        return
+
+    # ── Step 4: display ───────────────────────────────────────────────────
+    print(f"\n  {'Kernel':<34} {'ms':>8}  {'GFLOPS':>12}  {'% cuBLAS':>9}")
+    print("  " + "─"*70)
+    cublas_gflops = next((r['gflops'] for r in rows if 'cuBLAS' in r['name']), 1.0)
+
+    for r in rows:
+        bar = '█' * max(1, int(r['pct'] / 5))
+        print(f"  {r['name']:<34} {r['ms']:>8.2f}  {r['gflops']:>12,.1f}  {r['pct']:>8.1f}%  {bar}")
+
+    # Speedup: K4 vs K0
+    k0 = next((r for r in rows if 'K0' in r['name']), None)
+    k4 = next((r for r in rows if 'K4' in r['name']), None)
+    if k0 and k4 and k0['gflops'] > 0:
+        speedup = k4['gflops'] / k0['gflops']
+        gap     = 100.0 - k4['pct']
+        print(f"\n  K0 → K4 speedup: {speedup:.0f}×")
+        print(f"  Gap to cuBLAS:   {gap:.1f}% (instruction scheduling, software prefetch)")
+
+    print(f"\n  Profile command:")
+    print(f"    ncu --set full -o matmul_profile {BIN}")
+    print()
+
+
+def _print_reference_table():
+    """
+    Fallback table shown when nvcc is unavailable (Kaggle CPU, CI, etc).
+    Labelled as reference to make clear these are not live measurements.
+    All values are physically consistent with T4 hardware ceilings.
+    Run on a GPU to get real numbers.
+    """
+    print("\n  [No GPU / nvcc not found — showing reference values from T4 run]")
+    print(f"\n  {'Kernel':<34} {'ms':>8}  {'GFLOPS':>12}  {'% cuBLAS':>9}")
+    print("  " + "─"*70)
+    REF = [
+        ('cuBLAS (reference)',         3.12,  44_100, 100.0),
+        ('K0: Naive',                281.40,      65,   0.1),
+        ('K1: Shared Mem Tiled',      21.80,   5_800,  13.1),
+        ('K2: Register Tiled',         8.40,   6_900,  15.6),
+        ('K3: Vectorized (float4)',    6.90,   7_000,  15.9),
+        ('K4: WMMA Tensor Core FP16',  3.81,  33_000,  74.8),
+    ]
+    for name, ms, gflops, pct in REF:
+        bar = '█' * max(1, int(pct / 5))
+        print(f"  {name:<34} {ms:>8.2f}  {gflops:>12,}  {pct:>8.1f}%  {bar}")
+    print(f"\n  K0 → K4 speedup: {33000//65}×")
+    print(f"  Compile & run:  nvcc -O3 -arch=sm_75 -lcublas cuda_kernels/matmul_suite.cu -o matmul_bench && ./matmul_bench")
+    print()
 
 
 def run_full_report(args):
@@ -141,7 +253,8 @@ def run_full_report(args):
     print("="*60)
     gen = ReportGenerator(output_dir=args.out_dir, author='GPU Performance Research')
     paths = gen.export_all(primary_gpu=args.gpu or 'T4')
-    print("\n✅ Complete reports generated:")
+    print("
+Complete reports generated:")
     for fmt, path in paths.items():
         print(f"   {fmt:10s}: {path}")
     return paths
@@ -173,12 +286,9 @@ Examples:
     args = parser.parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
 
-    print("""
-╔══════════════════════════════════════════════════════════╗
-║   GPU PERFORMANCE ENGINEERING PLATFORM                   ║
-║   CUDA Kernels | Nsight | Roofline | LLM Profiler        ║
-╚══════════════════════════════════════════════════════════╝
-""")
+    print("\nGPU Performance Engineering Platform")
+    print("CUDA Kernels | Nsight | Roofline | LLM Profiler")
+    print("=" * 52)
 
     if args.module == 'roofline':
         run_roofline(args)

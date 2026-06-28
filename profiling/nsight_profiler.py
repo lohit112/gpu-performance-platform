@@ -276,7 +276,7 @@ class NsightReport:
         # Memory-bandwidth bound: high stall_long_scoreboard, high DRAM throughput
         if kernel.stall_long_scoreboard > 40:
             recs.append(
-                f"🔴 MEMORY BOUND: {kernel.stall_long_scoreboard:.0f}% warp cycles stalled "
+                f"Memory bound: {kernel.stall_long_scoreboard:.0f}% warp cycles stalled "
                 f"waiting for L2/HBM. Fix: increase cache hit rate with tiling, "
                 f"or use prefetching (__ldg() for read-only data)."
             )
@@ -284,7 +284,7 @@ class NsightReport:
         # Low compute utilization
         if kernel.sm_throughput_pct < 50:
             recs.append(
-                f"🔴 LOW SM UTILIZATION: {kernel.sm_throughput_pct:.0f}% of peak. "
+                f"Low SM utilization: {kernel.sm_throughput_pct:.0f}% of peak. "
                 f"SM is underloaded. Fix: increase tile size, increase batch size, "
                 f"or launch more thread blocks."
             )
@@ -292,7 +292,7 @@ class NsightReport:
         # Barrier stalls — too many __syncthreads() or load imbalance
         if kernel.stall_barrier > 25:
             recs.append(
-                f"🟡 BARRIER STALLS: {kernel.stall_barrier:.0f}% cycles at __syncthreads(). "
+                f"Barrier stalls: {kernel.stall_barrier:.0f}% cycles at __syncthreads(). "
                 f"Consider double-buffering (async pipeline) to overlap sync with compute: "
                 f"use __pipeline_commit/__pipeline_wait (Ampere+) or manual double-buffering."
             )
@@ -300,7 +300,7 @@ class NsightReport:
         # Low L1 hit rate
         if kernel.l1_hit_rate_pct < 30:
             recs.append(
-                f"🟡 POOR L1 CACHE REUSE: {kernel.l1_hit_rate_pct:.0f}% hit rate. "
+                f"Poor L1 cache reuse: {kernel.l1_hit_rate_pct:.0f}% hit rate. "
                 f"Access pattern is not cache-friendly. Fix: use shared memory for "
                 f"reused data (K1 pattern), or __ldg() for read-once global data."
             )
@@ -308,7 +308,7 @@ class NsightReport:
         # Bank conflicts in shared memory
         if kernel.shmem_bank_conflicts > 1000:
             recs.append(
-                f"🟡 SHARED MEMORY BANK CONFLICTS: {kernel.shmem_bank_conflicts:.0f} total. "
+                f"Shared memory bank conflicts: {kernel.shmem_bank_conflicts:.0f} total. "
                 f"Fix: pad SHMEM arrays by +1 column: float sA[TILE][TILE+1]. "
                 f"This spreads accesses across different banks."
             )
@@ -316,7 +316,7 @@ class NsightReport:
         # Low occupancy with high register pressure
         if kernel.achieved_occupancy_pct < 40 and kernel.registers_per_thread > 48:
             recs.append(
-                f"🟡 LOW OCCUPANCY due to register pressure: {kernel.registers_per_thread} "
+                f"Low occupancy (register pressure): {kernel.registers_per_thread} "
                 f"regs/thread limits active warps to {kernel.achieved_occupancy_pct:.0f}%. "
                 f"Fix: add __launch_bounds__({{}}) to cap register allocation. "
                 f"Trade-off: spills to local memory may appear — check with ncu --metrics "
@@ -334,14 +334,14 @@ class NsightReport:
         # Math throttle stalls — this is actually GOOD (compute-bound)
         if kernel.stall_math_throttle > 40:
             recs.append(
-                f"✅ COMPUTE-BOUND: {kernel.stall_math_throttle:.0f}% cycles stalled on "
+                f"Compute-bound: {kernel.stall_math_throttle:.0f}% cycles stalled on "
                 f"FP pipeline full. This is the GOOD kind of stall — math units are busy. "
                 f"Further optimization requires increasing instruction-level parallelism or "
                 f"switching to tensor cores."
             )
 
         if not recs:
-            recs.append("✅ No major bottlenecks detected. Kernel appears well-optimized.")
+            recs.append("No major bottlenecks detected. Kernel appears reasonably well-optimized.")
 
         return recs
 

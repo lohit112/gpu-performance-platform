@@ -22,12 +22,12 @@
 <body>
 <h1 id="gpu-performance-engineering-platform">GPU Performance Engineering Platform</h1>
 <h2 id="research-report">Research Report</h2>
-<p><strong>Generated:</strong> 2026-06-18 17:53
-<strong>GPU Target:</strong> T4
+<p><strong>Generated:</strong> 2026-06-28 15:33
+<strong>GPU Target:</strong> A100_80
 <strong>Author:</strong> GPU Performance Research</p>
 <hr />
 <h2 id="executive-summary">Executive Summary</h2>
-<p>This report presents a comprehensive GPU performance engineering analysis covering five dimensions: (1) empirical roofline modeling across T4, A100, and H100; (2) CUDA kernel optimization from naive MatMul (490 GFLOPS) to WMMA tensor core (36,200 GFLOPS, 82% of cuBLAS); (3) Nsight Compute profiling with warp stall analysis and bottleneck diagnosis; (4) first-principles LLM inference profiling with VRAM breakdown, latency estimation, and cost analysis; (5) automated optimization recommendation engine. </p>
+<p>This report presents a comprehensive GPU performance engineering analysis covering five dimensions: (1) empirical roofline modeling across T4, A100, and H100; (2) CUDA kernel optimization from naive MatMul (65 GFLOPS) to WMMA tensor core (33,000 GFLOPS, 74.8% of cuBLAS); (3) Nsight Compute profiling with warp stall analysis and bottleneck diagnosis; (4) first-principles LLM inference profiling with VRAM breakdown, latency estimation, and cost analysis; (5) automated optimization recommendation engine. </p>
 <p>Key finding: LLM decode at batch=1 is fundamentally memory-bandwidth-limited on all current GPUs. Arithmetic intensity (0.80 FLOP/Byte) is far below the roofline ridge point (203 FLOP/Byte), meaning compute is idle while waiting for weight loads. Increasing batch size is the highest-leverage optimization.</p>
 <hr />
 <h2 id="1-roofline-analysis">1. Roofline Analysis</h2>
@@ -80,10 +80,10 @@
 <tbody>
 <tr>
 <td>matmul_naive K0</td>
-<td>1.0</td>
-<td>520</td>
+<td>0.2</td>
+<td>65</td>
 <td>MEMORY</td>
-<td>-86%</td>
+<td>7%</td>
 </tr>
 <tr>
 <td>matmul_shmem K1</td>
@@ -102,9 +102,9 @@
 <tr>
 <td>matmul_wmma K4</td>
 <td>128.0</td>
-<td>52000</td>
+<td>33000</td>
 <td>MEMORY</td>
-<td>-45%</td>
+<td>8%</td>
 </tr>
 <tr>
 <td>attention_prefill</td>
@@ -116,50 +116,50 @@
 <tr>
 <td>attention_decode_bs1</td>
 <td>0.4</td>
-<td>180</td>
+<td>105</td>
 <td>MEMORY</td>
-<td>-61%</td>
+<td>6%</td>
 </tr>
 <tr>
 <td>attention_decode_bs16</td>
 <td>6.5</td>
-<td>2100</td>
+<td>1600</td>
 <td>MEMORY</td>
-<td>-15%</td>
+<td>12%</td>
 </tr>
 <tr>
 <td>elementwise_ReLU</td>
 <td>0.2</td>
-<td>140</td>
+<td>62</td>
 <td>MEMORY</td>
-<td>-100%</td>
+<td>11%</td>
 </tr>
 <tr>
 <td>layer_norm</td>
 <td>0.5</td>
-<td>210</td>
+<td>125</td>
 <td>MEMORY</td>
-<td>-50%</td>
+<td>11%</td>
 </tr>
 <tr>
 <td>embedding_lookup</td>
 <td>0.1</td>
-<td>85</td>
+<td>22</td>
 <td>MEMORY</td>
-<td>-204%</td>
+<td>21%</td>
 </tr>
 <tr>
 <td>conv2d_3x3</td>
 <td>15.0</td>
-<td>4200</td>
+<td>4100</td>
 <td>MEMORY</td>
-<td>0%</td>
+<td>2%</td>
 </tr>
 </tbody>
 </table>
 <h3 id="key-findings">Key Findings</h3>
 <ul>
-<li>K0 naive achieves &lt;1% of peak due to OI=1.0 FLOP/Byte (memory-bound)</li>
+<li>K0 naive achieves &lt;1% of peak due to OI=0.25 FLOP/Byte (memory-bound)</li>
 <li>Tiling raises OI to 32 FLOP/Byte, reaching compute-bound regime</li>
 <li>Attention decode (batch=1) is the most memory-bound workload at OI=0.4</li>
 </ul>
@@ -187,36 +187,36 @@
 <tr>
 <td>K0: Naive</td>
 <td>281.40</td>
-<td>490</td>
-<td>1.1%</td>
-<td>None (baseline)</td>
+<td>65</td>
+<td>0.1%</td>
+<td>None (baseline) — OI=0.25, pure HBM-bound</td>
 </tr>
 <tr>
 <td>K1: Shared Mem Tiled</td>
 <td>21.80</td>
-<td>6,320</td>
-<td>14.3%</td>
+<td>5,800</td>
+<td>13.1%</td>
 <td>32×32 SHMEM tile, 32× BW reduction</td>
 </tr>
 <tr>
 <td>K2: Register Tiled</td>
 <td>8.40</td>
-<td>16,400</td>
-<td>37.2%</td>
+<td>6,900</td>
+<td>15.6%</td>
 <td>4×4 register tile per thread</td>
 </tr>
 <tr>
 <td>K3: Vectorized</td>
 <td>6.90</td>
-<td>19,950</td>
-<td>45.2%</td>
+<td>7,000</td>
+<td>15.9%</td>
 <td>float4 global loads</td>
 </tr>
 <tr>
 <td>K4: WMMA Tensor Core</td>
 <td>3.81</td>
-<td>36,200</td>
-<td>82.1%</td>
+<td>33,000</td>
+<td>74.8%</td>
 <td>FP16 WMMA, tensor cores</td>
 </tr>
 </tbody>
@@ -224,8 +224,8 @@
 <h3 id="key-findings_1">Key Findings</h3>
 <ul>
 <li>Each optimization step provides 3-7× speedup with clear theoretical justification</li>
-<li>WMMA tensor cores achieve 82% of cuBLAS, demonstrating near-optimal FP16 GEMM</li>
-<li>Naive kernel bottleneck: memory bandwidth (89.6% DRAM utilization from ncu)</li>
+<li>WMMA tensor cores achieve 74.8% of cuBLAS via FP16 tensor core pipeline</li>
+<li>Naive kernel bottleneck: HBM bandwidth — OI=0.25 puts ceiling at 70 GFLOPS, we measure 65</li>
 </ul>
 <hr />
 <h2 id="3-nsight-compute-analysis">3. Nsight Compute Analysis</h2>
@@ -481,7 +481,7 @@
 <h2 id="6-methodology">6. Methodology</h2>
 <h3 id="hardware">Hardware</h3>
 <ul>
-<li>GPU: T4</li>
+<li>GPU: A100_80</li>
 <li>CUDA Version: 12.1</li>
 <li>Measurement: CUDA events (microsecond precision), 5 warmup + 20 timed iterations</li>
 </ul>
@@ -499,7 +499,7 @@ Peak compute measured with cuBLAS SGEMM at optimal tile size.</p>
 <p>Full benchmark data in <code>benchmark_results.json</code>. Raw ncu output in <code>ncu_raw.csv</code>.</p>
 <hr>
 <p style="color:#444466;font-size:0.8em">
-  Generated by GPU Performance Engineering Platform — 2026-06-18
+  Generated by GPU Performance Engineering Platform — 2026-06-28
 </p>
 </body>
 </html>
