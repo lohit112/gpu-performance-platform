@@ -1,0 +1,28 @@
+# GPU Performance Engineering Platform
+# Core (required for all Python modules)
+numpy>=1.24.0
+matplotlib>=3.7.0
+
+# PyTorch (required for GPU benchmarks)
+# Install the right CUDA variant from https://pytorch.org/get-started/locally/
+# Example: pip install torch --index-url https://download.pytorch.org/whl/cu121
+torch>=2.0.0
+
+# LLM benchmarks
+transformers>=4.36.0
+accelerate>=0.25.0
+
+# Report generation
+markdown>=3.5.0          # HTML report generation
+
+# Optional: PDF export
+# weasyprint>=60.0       # pip install weasyprint (requires system libpango)
+# pdfkit>=1.0.0          # pip install pdfkit (requires wkhtmltopdf binary)
+
+# Development / testing
+pytest>=7.0.0
+
+# CUDA kernel profiling (system tool, not pip):
+#   Nsight Compute CLI: https://developer.nvidia.com/nsight-compute
+#   On most CUDA installs: ncu is at /usr/local/cuda/bin/ncu
+#   Check: which ncu || ncu --version

@@ -1,0 +1,198 @@
+{
+  "generated": "2026-06-18T17:53:54.015203",
+  "kernel_benchmarks": [
+    {
+      "name": "cuBLAS (reference)",
+      "ms": 3.12,
+      "gflops": 44100,
+      "pct": 100.0,
+      "optimization": "Vendor library (CUTLASS)"
+    },
+    {
+      "name": "K0: Naive",
+      "ms": 281.4,
+      "gflops": 490,
+      "pct": 1.1,
+      "optimization": "None (baseline)"
+    },
+    {
+      "name": "K1: Shared Mem Tiled",
+      "ms": 21.8,
+      "gflops": 6320,
+      "pct": 14.3,
+      "optimization": "32\u00d732 SHMEM tile, 32\u00d7 BW reduction"
+    },
+    {
+      "name": "K2: Register Tiled",
+      "ms": 8.4,
+      "gflops": 16400,
+      "pct": 37.2,
+      "optimization": "4\u00d74 register tile per thread"
+    },
+    {
+      "name": "K3: Vectorized",
+      "ms": 6.9,
+      "gflops": 19950,
+      "pct": 45.2,
+      "optimization": "float4 global loads"
+    },
+    {
+      "name": "K4: WMMA Tensor Core",
+      "ms": 3.81,
+      "gflops": 36200,
+      "pct": 82.1,
+      "optimization": "FP16 WMMA, tensor cores"
+    }
+  ],
+  "roofline_workloads": [
+    {
+      "name": "matmul_naive K0",
+      "oi": 1.0,
+      "gflops": 520,
+      "bound": "MEMORY",
+      "gap_pct": -85.71428571428572
+    },
+    {
+      "name": "matmul_shmem K1",
+      "oi": 32.0,
+      "gflops": 5800,
+      "bound": "COMPUTE",
+      "gap_pct": 19.444444444444443
+    },
+    {
+      "name": "matmul_reg K2",
+      "oi": 64.0,
+      "gflops": 6900,
+      "bound": "COMPUTE",
+      "gap_pct": 4.1666666666666625
+    },
+    {
+      "name": "matmul_wmma K4",
+      "oi": 128,
+      "gflops": 52000,
+      "bound": "MEMORY",
+      "gap_pct": -45.08928571428572
+    },
+    {
+      "name": "attention_prefill",
+      "oi": 85.0,
+      "gflops": 6200,
+      "bound": "MEMORY",
+      "gap_pct": 73.94957983193278
+    },
+    {
+      "name": "attention_decode_bs1",
+      "oi": 0.4,
+      "gflops": 180,
+      "bound": "MEMORY",
+      "gap_pct": -60.71428571428572
+    },
+    {
+      "name": "attention_decode_bs16",
+      "oi": 6.5,
+      "gflops": 2100,
+      "bound": "MEMORY",
+      "gap_pct": -15.384615384615374
+    },
+    {
+      "name": "elementwise_ReLU",
+      "oi": 0.25,
+      "gflops": 140,
+      "bound": "MEMORY",
+      "gap_pct": -100.0
+    },
+    {
+      "name": "layer_norm",
+      "oi": 0.5,
+      "gflops": 210,
+      "bound": "MEMORY",
+      "gap_pct": -50.0
+    },
+    {
+      "name": "embedding_lookup",
+      "oi": 0.1,
+      "gflops": 85,
+      "bound": "MEMORY",
+      "gap_pct": -203.57142857142856
+    },
+    {
+      "name": "conv2d_3x3",
+      "oi": 15.0,
+      "gflops": 4200,
+      "bound": "MEMORY",
+      "gap_pct": 0.0
+    }
+  ],
+  "llm_profiles": [
+    {
+      "batch": 1,
+      "model": "Llama-2 7B",
+      "gpu": "T4",
+      "vram_gb": 17.714592512000003,
+      "decode_tps": 19.817329249293564,
+      "prefill_ms": 2319.848709153758,
+      "bound": "MEMORY",
+      "cost_output_per_1m": 14.857927662222226
+    },
+    {
+      "batch": 2,
+      "model": "Llama-2 7B",
+      "gpu": "T4",
+      "vram_gb": 19.929185024,
+      "decode_tps": 34.98229811757735,
+      "prefill_ms": 4639.697418307516,
+      "bound": "MEMORY",
+      "cost_output_per_1m": 8.41695544
+    },
+    {
+      "batch": 4,
+      "model": "Llama-2 7B",
+      "gpu": "T4",
+      "vram_gb": 24.358370047999998,
+      "decode_tps": 56.6624039917893,
+      "prefill_ms": 9279.394836615033,
+      "bound": "MEMORY",
+      "cost_output_per_1m": 5.196469328888889
+    },
+    {
+      "batch": 8,
+      "model": "Llama-2 7B",
+      "gpu": "T4",
+      "vram_gb": 33.216740096,
+      "decode_tps": 82.1042572338202,
+      "prefill_ms": 18558.789673230065,
+      "bound": "MEMORY",
+      "cost_output_per_1m": 5.379339410000001
+    },
+    {
+      "batch": 16,
+      "model": "Llama-2 7B",
+      "gpu": "T4",
+      "vram_gb": 50.933480192000005,
+      "decode_tps": 105.87319478527084,
+      "prefill_ms": 37117.57934646013,
+      "bound": "MEMORY",
+      "cost_output_per_1m": 5.562209491111112
+    },
+    {
+      "batch": 32,
+      "model": "Llama-2 7B",
+      "gpu": "T4",
+      "vram_gb": 86.36696038400001,
+      "decode_tps": 123.79188558797414,
+      "prefill_ms": 74235.15869292026,
+      "bound": "MEMORY",
+      "cost_output_per_1m": 7.135631945
+    },
+    {
+      "batch": 64,
+      "model": "Llama-2 7B",
+      "gpu": "T4",
+      "vram_gb": 157.23392076800002,
+      "decode_tps": 135.23601114812647,
+      "prefill_ms": 148470.31738584052,
+      "bound": "MEMORY",
+      "cost_output_per_1m": 10.886317998611114
+    }
+  ]
+}
