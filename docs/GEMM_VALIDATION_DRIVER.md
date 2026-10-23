@@ -4,11 +4,7 @@
 
 ## Build/run on a supported NVIDIA GPU
 
-The validator includes `matmul_suite.cu`, so first apply the small guard patch:
-
-```bash
-git apply patches/0001-guard-legacy-main.patch
-```
+The feature branch already includes the guard around the legacy `main()`. Do not apply the patch again while testing this branch. The patch is only for manually copying the validator to an unmodified `main` branch.
 
 Then:
 
