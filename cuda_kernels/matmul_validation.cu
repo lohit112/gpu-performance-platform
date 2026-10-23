@@ -1,5 +1,5 @@
 // Validation-oriented driver for the existing K0-K4 kernels.
-// Apply patches/0001-guard-legacy-main.patch first.
+// The feature branch includes a guard around the legacy main() in matmul_suite.cu.
 #define GPU_PERF_LIBRARY_ONLY
 #include "matmul_suite.cu"
 
