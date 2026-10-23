@@ -110,6 +110,12 @@ def main() -> int:
                                          args.warmup, args.iterations)
             torch_ms = event_latency_ms(lambda: torch.softmax(x, dim=-1),
                                         args.warmup, args.iterations)
+            # Approximation from source-level traffic: pass 1 reads input (4 B),
+            # pass 2 reads input and writes unnormalized output (8 B), pass 3
+            # reads and rewrites output (8 B), for ~20 logical bytes/element.
+            # This is NOT a substitute for Nsight DRAM-byte counters.
+            logical_bytes = rows * cols * 20
+            logical_gb_s = logical_bytes / (custom_ms * 1.0e6) if custom_ms else ""
             record = {
                 "kernel": "custom_row_softmax",
                 "reference": "torch.softmax_cuda",
@@ -123,6 +129,7 @@ def main() -> int:
                 "torch_over_custom_speedup": round(torch_ms / custom_ms, 4) if custom_ms else "",
                 "max_abs_error": max_abs_error,
                 "max_row_sum_error": max_row_sum_error,
+                "estimated_custom_logical_GB_s_not_DRAM": round(logical_gb_s, 4) if logical_gb_s != "" else "",
                 "warmup_launches": args.warmup,
                 "timed_launches_per_sample": args.iterations,
                 "timing_samples": 5,
@@ -131,7 +138,8 @@ def main() -> int:
             print(
                 f"rows={rows:4d} cols={cols:4d} scale={scale:4.1f} "
                 f"custom={custom_ms:.6f} ms torch={torch_ms:.6f} ms "
-                f"max_abs_err={max_abs_error:.3e} row_sum_err={max_row_sum_error:.3e}"
+                f"max_abs_err={max_abs_error:.3e} row_sum_err={max_row_sum_error:.3e} "
+                f"logical_GB/s_est={logical_gb_s if logical_gb_s == '' else f'{logical_gb_s:.2f}'}"
             )
 
     with args.output.open("w", newline="", encoding="utf-8") as handle:
