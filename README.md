@@ -1,286 +1,254 @@
 # GPU Performance Engineering Platform
 
-CUDA kernel benchmarking, roofline modeling, Nsight Compute profiling, and LLM inference analysis — built on T4/P100 GPU.
+A CUDA-focused engineering project for studying **GPU kernel optimization, memory behavior, roofline analysis, and LLM inference trade-offs**. It combines custom GEMM kernels with Python tools for profiling analysis, model-based inference estimates, and report generation.
 
-![Python](https://img.shields.io/badge/Python-3.10+-3d9abf?style=flat-square)
-![CUDA](https://img.shields.io/badge/CUDA-12.1-76b900?style=flat-square)
-![PyTorch](https://img.shields.io/badge/PyTorch-2.3-e8503a?style=flat-square)
-![License](https://img.shields.io/badge/License-MIT-f5c842?style=flat-square)
+[![CUDA](https://img.shields.io/badge/CUDA-kernel%20development-76B900?logo=nvidia&logoColor=white)](https://developer.nvidia.com/cuda-toolkit)
+[![Python](https://img.shields.io/badge/Python-analysis%20tools-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-inference%20modeling-EE4C2C?logo=pytorch&logoColor=white)](https://pytorch.org/)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 ---
 
-## What this is
+## Overview
 
-This project started as a CUDA learning exercise and grew into a small benchmarking and analysis platform. The goal was to understand GPU performance at the level NVIDIA engineers think about it — not just "run a benchmark and report GFLOPS," but trace *why* a kernel performs the way it does and what the hardware is actually doing.
+GPU performance work is more than measuring elapsed time. Results are meaningful only when the workload, precision, hardware, reference implementation, and measurement method are clearly specified.
 
-The architecture follows the reasoning loop I found most useful:
+This repository explores that workflow through five CUDA GEMM implementations and a set of analysis modules. The project is intended as a transparent engineering portfolio: kernel code, timing workflows, profiling parsers, analytical models, and generated reports are kept distinct so readers can tell **device measurements** from **model estimates** and **demo data**.
 
+### Engineering workflow
+
+```text
+Workload definition
+        |
+        v
+Hardware / precision assumptions
+        |
+        v
+CUDA kernel implementation -----> cuBLAS comparison
+        |                                  |
+        v                                  v
+CUDA event timing                  Numerical validation
+        |                                  |
+        +----------------+-----------------+
+                         |
+                         v
+              Nsight Compute analysis
+                         |
+                         v
+                Roofline interpretation
+                         |
+                         v
+             Reproducible report outputs
 ```
-Hardware Limits → Roofline Model → Kernel Profiling → Optimization → Validation
-```
 
----
+## What is included
 
-## Known Limitations
+| Component | Purpose | Main files |
+|---|---|---|
+| CUDA GEMM suite | Compare progressively different matrix-multiplication strategies | `cuda_kernels/matmul_suite.cu` |
+| Roofline analysis | Model compute and memory ceilings and reason about arithmetic intensity | `roofline/roofline_model.py` |
+| Nsight Compute analysis | Parse profiler CSV data, summarize bottlenecks, and generate visual reports | `profiling/nsight_profiler.py` |
+| LLM inference profiler | Estimate memory footprint, KV-cache needs, latency, throughput, and cost from model assumptions | `llm_profiler/inference_profiler.py` |
+| Report generation | Export analysis outputs as Markdown, HTML, and JSON | `report_gen/report_generator.py` |
+| Unified CLI | Run one module or generate a combined report | `main.py` |
 
-This project focuses on CUDA optimization techniques rather than reproducing state-of-the-art GEMM implementations.
+## CUDA kernel progression
 
-Current limitations:
+The GEMM suite contains five implementations. Each illustrates a different optimization strategy; the table describes the implementation, not a claim that every version is faster on every GPU.
 
-- `cp.async` (software pipelining for Ampere+) is not implemented in K3
-- K3 vectorizes global loads but computation remains scalar; a full register-tiled + vectorized kernel would score higher
-- Benchmarks validated primarily on NVIDIA T4; sm_86/sm_90 behavior may differ
-- Nsight Compute profiling (`ncu --csv`) is blocked on Colab T4 due to libcuda stub restrictions in virtualized environments — the nsight module ships with calibrated demo data and a real-CSV path for environments where `ncu` works (Kaggle P100 works; bare metal works)
-- Hopper-specific features (TMA, WGMMA) are outside the current scope
-- LLM latency estimates assume MFU=0.35 (reasonable for PyTorch + FlashAttention); real numbers vary ±20%
+| Kernel | Technique | Main concept |
+|---|---|---|
+| **K0 — Naive** | One thread computes an output element | Baseline with little explicit data reuse |
+| **K1 — Shared-memory tiled** | Reuses input tiles staged in shared memory | Reduce repeated global-memory reads |
+| **K2 — Register tiled** | Each thread accumulates a small output tile | Reuse values in registers and reduce shared-memory traffic |
+| **K3 — Vectorized** | Uses `float4` memory accesses | Explore wider loads/stores and address-instruction overhead |
+| **K4 — WMMA Tensor Core** | FP16 inputs with FP32 accumulation | Explore Tensor Core execution and mixed-precision trade-offs |
 
----
+The current CUDA executable is configured around a fixed `N=4096` workload. Its edge-condition and precision behavior should be validated before treating the suite as a general-purpose GEMM implementation.
 
-## Key Results (T4 GPU)
+## Quick start
 
-| Measurement | Value | Interpretation |
-|------------|-------|----------------|
-| HBM Bandwidth (measured) | 280 GB/s | 87.5% of spec (320 GB/s) |
-| Naive GEMM vs cuBLAS | 65 vs 44,100 GFLOPS | 0.1% efficiency — OI=0.25, pure BW-bound |
-| WMMA Tensor Core vs cuBLAS | 33,000 vs 44,100 GFLOPS | 74.8% efficiency |
-| K0 → K4 speedup | 508× | Through 4 targeted optimizations |
-| Llama-7B decode OI (bs=1) | 0.4 FLOP/Byte | Memory-bound: compute is idle |
-| Llama-7B decode throughput (bs=16) | ~890 tok/s | 32× better than bs=1 |
-| Prefill scaling exponent | 1.94 | Confirms O(N²) attention |
-
----
-
-## Changelog
-
-### v2
-
-- Replaced static benchmark tables with real benchmark execution via subprocess runner
-- Added dynamic parsing of `matmul_bench` output — no hardcoded GFLOPS values
-- Implemented true `float4` vectorized loads in K3 (original version described them in comments but didn't use the `float4` type)
-- Added FP32→FP16 conversion path for WMMA kernel
-- Improved ncu CSV parser to handle metric name variations across ncu versions
-
----
-
-## Modules
-
-### 1. `cuda_kernels/matmul_suite.cu` — CUDA Kernel Engineering
-
-Five progressively optimized GEMM kernels for N=4096 on T4, each targeting a specific bottleneck:
-
-| Kernel | Technique | GFLOPS (T4) | % cuBLAS | Bottleneck removed |
-|--------|-----------|-------------|----------|-------------------|
-| K0: Naive | Baseline | 65 | 0.1% | — |
-| K1: Shared Memory Tiled | 32×32 SHMEM tile | 5,800 | 13.1% | Redundant HBM reads (32× reduction) |
-| K2: Register Tiled | 4×4 output tile/thread | 6,900 | 15.6% | SHMEM→register bandwidth |
-| K3: Vectorized | `float4` global loads | 7,000 | 15.9% | Instruction count for loads |
-| K4: WMMA Tensor Core | FP16 WMMA API | 33,000 | 74.8% | FP32 → tensor core pipeline |
-| cuBLAS (reference) | CUTLASS (vendor) | 44,100 | 100% | — |
-
-> **Why K0 achieves only 0.1% of peak:** Naive GEMM arithmetic intensity is 0.25 FLOP/Byte (each multiply-add reads two floats from HBM with no reuse). T4 bandwidth ceiling at this OI = 0.25 × 280 = 70 GFLOPS. The kernel is purely bandwidth-bound before any compute happens.
+### 1. Clone the repository
 
 ```bash
-nvcc -O3 -arch=sm_75 -lcublas cuda_kernels/matmul_suite.cu -o matmul_bench
-./matmul_bench
-
-# Profile with Nsight Compute:
-ncu --set full -o matmul_profile ./matmul_bench
+git clone https://github.com/lohit112/gpu-performance-platform.git
+cd gpu-performance-platform
 ```
 
----
+### 2. Install the Python dependencies
 
-### 2. `roofline/roofline_model.py` — Roofline Model
-
-The module establishes hardware ceilings from calibration kernels (not spec sheets), then places each kernel at its measured `(FLOPs/Byte, GFLOPS)` operating point.
-
-The key distinction from naive "arithmetic intensity" calculations:
-
-**What most student projects do:**
-```python
-arithmetic_intensity = fp32_tflops / bandwidth_gbps  # hardware ridge point, not a workload analysis
-```
-
-**What this module does:**
-1. Establishes hardware ceilings from calibration kernels (not spec sheets)
-2. Collects per-kernel FLOPs + DRAM bytes (via `ncu` metrics)
-3. Places each kernel at `(FLOPs/Byte, GFLOPS)` on the chart
-4. Classifies as compute/memory/mixed bound with ±20% mixed zone around the ridge
-5. Generates specific optimization advice based on distance from ceiling
-
-Demo workload values are calibrated to be physically consistent with T4 hardware — every `achieved_gflops` satisfies `achieved ≤ min(OI × bandwidth, peak_compute)`.
-
-```python
-from roofline.roofline_model import HardwareRoof, build_demo_workloads, plot_roofline
-
-roofs = [HardwareRoof.t4_measured(), HardwareRoof.a100_spec(), HardwareRoof.h100_spec()]
-plot_roofline(roofs, build_demo_workloads(), 'roofline.png')
-```
-
----
-
-### 3. `profiling/nsight_profiler.py` — Nsight Compute Integration
-
-Parses `ncu --csv` output and extracts the 12 metrics that actually matter across 5 bottleneck categories:
-
-| Metric | Category | What it tells you |
-|--------|----------|------------------|
-| `sm__throughput` | Compute | Are SMs busy? <50% → something else is limiting |
-| `stall_long_scoreboard` | Memory | % cycles waiting for L2/HBM — the #1 memory-bound signal |
-| `stall_math_throttle` | Compute | % cycles on FP pipeline — the "good" stall |
-| `stall_barrier` | Sync | `__syncthreads()` overhead; >20% → try double-buffering |
-| `pipe_tensor_cycles_active` | Tensor Cores | TC utilization; 0% on FP16 = missed opportunity |
-| `l1_hit_rate / l2_hit_rate` | Cache | Tiling effectiveness |
-
-Rule-based recommendation engine maps each pattern to a specific fix:
-- High `stall_long_scoreboard` → add tiling, increase cache reuse
-- Low occupancy + high `registers_per_thread` → add `__launch_bounds__`
-- High `stall_barrier` → double-buffer with async pipeline (Ampere+)
-- Low `tensor_core_pct` on FP16 → switch to WMMA API
-
-```python
-# With real ncu output:
-report = NsightReport.from_csv('ncu_raw.csv')
-
-# Without GPU (demo mode with calibrated synthetic data):
-report = NsightReport._demo_report()
-visualize_nsight_report(report, 'nsight_analysis.png')
-```
-
-**Note on ncu availability:** Profiling with `ncu` requires a real CUDA driver (not the stub used in Colab). Kaggle's P100 tier and bare-metal instances work fine. The demo mode is explicitly labeled in all outputs.
-
----
-
-### 4. `llm_profiler/inference_profiler.py` — LLM Inference Analysis
-
-Derives prefill/decode behavior from first principles rather than running inference directly. The core result this module proves from math:
-
-**LLM decode at batch=1 is memory-bandwidth-limited on every GPU today.**
-
-```
-Bytes loaded per decode step  = model_weights + KV_cache  (~14 GB for Llama-7B FP16)
-FLOPs per decode step         = 2 × num_layers × 4 × hidden_dim²  (~5B FLOPs)
-Effective OI                  = 5e9 / 14e9 ≈ 0.36 FLOP/Byte
-T4 ridge point (FP16)         = 65 TFLOPS / 280 GB/s ≈ 232 FLOP/Byte
-
-0.36 << 232 → deeply memory-bound, compute is idle
-```
-
-Batching to 16 loads the same 14 GB of weights but processes 16 tokens simultaneously → ~32× throughput improvement.
-
-**Supported models:** GPT-2, GPT-2 XL, Llama-2 7B/13B/70B, Llama-3 8B/70B, Mistral 7B, Mixtral 8×7B, GPT-4 (estimate)
-
-**Supported GPUs:** T4, L4, A100-40/80, H100 SXM/PCIe, RTX 4090, RTX 5090, B200
-
-**Outputs:** VRAM breakdown (weights + KV cache + activations), prefill/decode latency, tokens/sec, cost per 1M tokens, bottleneck classification
-
----
-
-### 5. `report_gen/report_generator.py` — Automated Report Generation
-
-Runs all analyses and generates Markdown + HTML + JSON:
+Use a Python environment compatible with the dependencies in `requirements.txt`.
 
 ```bash
-python main.py --module report
-# → report_output/gpu_research_report.md
-# → report_output/gpu_research_report.html
-# → report_output/benchmark_results.json
+python -m venv .venv
+
+# Linux / macOS
+source .venv/bin/activate
+
+# Windows PowerShell
+# .venv\Scripts\Activate.ps1
+
+python -m pip install --upgrade pip
+pip install -r requirements.txt
 ```
 
----
+For GPU-backed features, install a CUDA-enabled build of PyTorch compatible with your NVIDIA driver and toolkit. See the [official PyTorch installation selector](https://pytorch.org/get-started/locally/).
 
-## Quick Start
+### 3. Run an analysis module
 
 ```bash
-pip install torch numpy matplotlib
-
-# Run specific module:
-python main.py --module roofline    # roofline chart
-python main.py --module nsight      # Nsight analysis (demo data)
-python main.py --module llm         # LLM profiler
-python main.py --module kernels     # kernel benchmark table
-
-# Full report:
+# Generate the combined report
 python main.py
 
-# Custom LLM profile:
+# Individual modules
+python main.py --module roofline
+python main.py --module nsight
+python main.py --module llm
+python main.py --module kernels
+
+# Example analytical profile
 python main.py --module llm --model llama_70b --gpu H100_SXM
 ```
 
-### With a GPU
+The report generator writes outputs under `report_output/` by default. Use the CLI's `--out-dir` option to choose another location.
+
+> **Important:** if the `kernels` module cannot find `nvcc`, the current CLI falls back to a legacy reference table so the rest of the application can run. That fallback is not a live benchmark and must not be cited as a measurement from the current machine.
+
+## Run the CUDA GEMM executable
+
+A supported NVIDIA GPU, NVIDIA driver, CUDA Toolkit, `nvcc`, and cuBLAS are required.
+
+For a Tesla T4 (compute capability 7.5):
 
 ```bash
-# Compile CUDA kernels (T4 = sm_75, A100 = sm_80, H100 = sm_90)
 nvcc -O3 -arch=sm_75 -lcublas cuda_kernels/matmul_suite.cu -o matmul_bench
 ./matmul_bench
+```
 
-# Profile with Nsight Compute:
-ncu --metrics sm__throughput.avg.pct_of_peak_sustained_elapsed,\
+Change `sm_75` to match the target GPU architecture. The current source's compile-time configuration uses a fixed matrix size; different shapes should not be assumed to be validated automatically.
+
+### Measurement caveats
+
+- Use warm-up iterations and repeated CUDA-event timings. Report the median and spread, along with the exact GPU, driver, CUDA/cuBLAS versions, matrix size, and data type.
+- K0–K3 use FP32 data. K4 uses FP16 inputs and accumulates in FP32. Do not present K4's comparison against an FP32 cuBLAS reference as an apples-to-apples efficiency result; compare each kernel with an appropriate reference at matching precision.
+- Verify the output against a trusted implementation and report numerical error before publishing performance claims.
+- Include data conversion and end-to-end costs separately when they are part of the real workload.
+
+**Benchmark results are intentionally not summarized here until the measurement and precision-comparison path has been reproduced.** Historical values in earlier versions of this README were not sufficiently consistent to publish as validated results. The next published table should link to raw run output and state the configuration and validation status.
+
+## Nsight Compute profiling
+
+The profiling module can parse a CSV export from Nsight Compute and generate an analysis report.
+
+### Capture a profile
+
+Compile the executable first, then run it under `ncu` on a system where Nsight Compute can access the NVIDIA driver and GPU:
+
+```bash
+ncu --metrics \
+sm__throughput.avg.pct_of_peak_sustained_elapsed,\
+sm__warps_active.avg.pct_of_peak_sustained_active,\
+l1tex__t_sector_hit_rate.pct,\
+lts__t_sector_hit_rate.pct,\
+smsp__warp_issue_stalled_mio_throttle_per_warp_active.pct,\
 smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct,\
 sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed \
---csv --page raw ./matmul_bench > ncu_raw.csv
+--csv --page raw -o my_profile ./matmul_bench > ncu_raw.csv
+```
 
-# Use real profile data:
+### Analyze the CSV
+
+```bash
 python main.py --module nsight --nsight-csv ncu_raw.csv
 ```
 
----
+The parser focuses on signals such as SM throughput, active warps, cache-sector hit rates, memory-dependency stalls, issue throttling, and Tensor Core activity. Interpret metrics in context; no single counter proves a bottleneck by itself.
 
-## Project Structure
+> **Demo mode:** when no real `--nsight-csv` file is supplied, the `nsight` module uses demo data. Demo-derived charts are illustrative only. Label them as demo output and never describe their values as hardware measurements.
 
+## Roofline analysis
+
+The roofline module combines hardware roof configurations and workload points to reason about whether a workload is likely compute-bound, memory-bound, or mixed. A defensible empirical roofline requires measured hardware ceilings and measured per-kernel FLOPs and memory traffic. If demo or specification-based values are used, they must be labelled accordingly.
+
+```bash
+python main.py --module roofline
 ```
-gpu_platform_v2/
+
+## LLM inference modeling
+
+The inference profiler is a **first-principles analytical model**, not a live inference-serving benchmark. It estimates factors such as:
+
+- Model-weight and KV-cache memory requirements
+- Approximate prefill/decode behavior under selected assumptions
+- Whether a workload may be constrained by memory bandwidth or compute
+- Batch-size and GPU-configuration trade-offs
+- Estimated throughput and cost metrics
+
+Run an example:
+
+```bash
+python main.py --module llm --model llama_70b --gpu H100_SXM
+```
+
+Estimates depend on assumptions such as precision, context length, batch size, and model FLOPs. They should not be presented as observed tokens-per-second measurements from a running model unless separately benchmarked on a real serving stack.
+
+## Report outputs
+
+The report generator exports the analysis into several formats:
+
+```bash
+python main.py --module report
+```
+
+Expected report artifacts include:
+
+- `report_output/gpu_research_report.md`
+- `report_output/gpu_research_report.html`
+- `report_output/benchmark_results.json`
+
+Generated files may reflect measured data, analytical estimates, or demo fixtures depending on the selected module and inputs. Preserve that provenance when sharing a report.
+
+## Repository layout
+
+```text
+gpu-performance-platform/
 ├── cuda_kernels/
-│   └── matmul_suite.cu          ← K0–K4 GEMM kernels + cuBLAS benchmark
-├── profiling/
-│   └── nsight_profiler.py       ← ncu CSV parser + visualization + recommendations
-├── roofline/
-│   └── roofline_model.py        ← Roofline model with workload classification
+│   └── matmul_suite.cu
 ├── llm_profiler/
-│   └── inference_profiler.py    ← First-principles VRAM + latency + cost model
+│   └── inference_profiler.py
+├── profiling/
+│   └── nsight_profiler.py
+├── roofline/
+│   └── roofline_model.py
 ├── report_gen/
-│   └── report_generator.py      ← Automated MD/HTML/JSON report generation
-├── main.py                      ← Unified entry point
-└── requirements.txt
+│   └── report_generator.py
+├── report_output/
+├── main.py
+├── requirements.txt
+└── README.md
 ```
 
----
+## Current limitations
 
-## Development Notes
+- The GEMM implementation is a learning and analysis suite, not a replacement for production libraries such as cuBLAS or CUTLASS.
+- The suite currently uses a fixed matrix-size configuration and should not be assumed to support all edge sizes and shapes without additional testing.
+- The K4 WMMA path uses mixed precision; results need a precision-matched reference and explicit accuracy reporting.
+- Nsight profiling requires a functioning NVIDIA driver and profiler environment. Virtualized environments may restrict hardware-counter access.
+- Demo profiler data and analytical LLM estimates are useful for exercising the analysis pipeline, but they are not empirical GPU benchmark results.
+- Performance can change substantially with GPU architecture, clocks, memory state, compiler/toolkit, and launch configuration.
 
-The initial version used hardcoded benchmark values to develop the visualization pipeline before having real GPU access. That was replaced with a subprocess-based benchmark runner that executes the compiled CUDA binary and parses its output. The benchmark table in the README reflects real T4 measurements from that runner.
+## Roadmap
 
-Similarly, the original K3 kernel described `float4` loads in comments but used scalar loads in the actual code. The current version uses the `float4` type for global memory accesses.
-
-Nsight profiling on Colab T4 failed because the environment uses a libcuda stub driver — `ncu` exits with an error about driver version mismatches. Those runs were excluded and the nsight module falls back to calibrated demo data in that environment. Kaggle P100 works correctly with `ncu`.
-
----
-
-## What an NVIDIA engineer will ask
-
-**"Why does your naive MatMul only achieve 0.1% of peak FLOPS?"**
-> Arithmetic intensity of naive NxN GEMM = 0.25 FLOP/Byte (two HBM loads per FMA, no data reuse). T4 bandwidth ceiling at OI=0.25 is 0.25 × 280 = 70 GFLOPS. We measure 65 GFLOPS — 93% of the bandwidth ceiling, exactly what the roofline predicts. The kernel is not compute-limited at all.
-
-**"Why does tiling reduce memory traffic by 32×?"**
-> A 32×32 thread block computes 1,024 output elements. Without tiling: 2 × 32 × 1,024 = 65,536 HBM loads. With tiling: two 32×32 tiles (2,048 elements) loaded once, reused across 32 accumulation steps. Reuse factor = tile side length = 32.
-
-**"How do you know LLM decode is memory-bound?"**
-> At batch=1, each decode step loads ~14 GB of weights to compute ~5B FLOPs → OI ≈ 0.36 FLOP/Byte. T4's FP16 ridge point = 280 GB/s ÷ 65 TFLOPS ≈ 4.3 FLOP/Byte. Since 0.36 << 4.3, the GPU is idle on compute for >99% of the time. The memory bus is the bottleneck, not the tensor cores.
-
-**"What does `stall_long_scoreboard` mean in Nsight?"**
-> It measures the percentage of warp cycles stalled waiting for a long-latency memory operation — specifically an L2 or HBM access after a cache miss. When this metric exceeds 40%, the kernel is memory-latency-bound. The fix is to add tiling (increase cache reuse) or software prefetching to overlap memory latency with computation.
-
----
-
-## TODOs
-
-- Add `cp.async` path for sm80+ (Ampere async copy pipeline)
-- Benchmark larger tile sizes (64×64, 128×128) to find occupancy/tile tradeoff
-- Add CUTLASS comparison — understand the gap between K4 and cuBLAS at the instruction level
-- Occupancy tuning via `__launch_bounds__` on K2/K3
-- Run `ncu --set full` on real hardware and feed actual counter data into the nsight module
-
----
+- [ ] Publish reproducible GEMM results with raw timing logs and precision-matched correctness checks.
+- [ ] Validate non-multiple dimensions and document kernel boundary behavior.
+- [ ] Attach real Nsight Compute captures and tie optimizations to observed counters.
+- [ ] Add a second custom CUDA workload and compare correctness and latency against a trusted reference.
+- [ ] Separate live-measurement output from demo and analytical output in generated reports.
 
 ## License
 
-MIT — use freely, attribution appreciated.
+This repository is distributed under the MIT License. See [LICENSE](LICENSE) if present in the repository.
+
+---
+
+**Author:** [Lohit Reddy](https://github.com/lohit112) · [GitHub profile](https://github.com/lohit112)
