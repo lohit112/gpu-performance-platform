@@ -1,0 +1,13 @@
+--- a/cuda_kernels/matmul_suite.cu
++++ b/cuda_kernels/matmul_suite.cu
+@@ -367,3 +367,4 @@
+ }
+ 
+ /* ─── Main ───────────────────────────────────────────────────────────────── */
++#ifndef GPU_PERF_LIBRARY_ONLY
+ int main() {
+@@ -547,4 +548,5 @@
+     free(h_A); free(h_B);
+     return 0;
+ }
++#endif  // GPU_PERF_LIBRARY_ONLY
