@@ -36,17 +36,13 @@ Current limitations:
 
 ---
 
-## Key Results (T4 GPU)
+## Benchmark Status (Revalidation In Progress)
 
-| Measurement | Value | Interpretation |
-|------------|-------|----------------|
-| HBM Bandwidth (measured) | 280 GB/s | 87.5% of spec (320 GB/s) |
-| Naive GEMM vs cuBLAS | 65 vs 44,100 GFLOPS | 0.1% efficiency — OI=0.25, pure BW-bound |
-| WMMA Tensor Core vs cuBLAS | 33,000 vs 44,100 GFLOPS | 74.8% efficiency |
-| K0 → K4 speedup | 508× | Through 4 targeted optimizations |
-| Llama-7B decode OI (bs=1) | 0.4 FLOP/Byte | Memory-bound: compute is idle |
-| Llama-7B decode throughput (bs=16) | ~890 tok/s | 32× better than bs=1 |
-| Prefill scaling exponent | 1.94 | Confirms O(N²) attention |
+The previous headline performance tables have been removed while the measurement path is revalidated. The old T4 table reported a 44,100 GFLOP/s cuBLAS FP32 result. NVIDIA's published T4 specification is 8.1 TFLOP/s peak FP32 and 65 TFLOP/s mixed FP16/FP32 Tensor Core performance, so the old FP32 result is not credible as labelled. See [GEMM benchmark audit](docs/GEMM_BENCHMARK_AUDIT.md).
+
+The new validation runner compares K0–K3 against cuBLAS FP32 and K4 against a separate FP16-input / FP32-accumulation cuBLAS reference. It checks numerical error before timing and emits a CSV with GPU identity, dtype, median/min/max timing and correctness status. **No new performance claim is made until this runner compiles and passes on a real NVIDIA GPU.**
+
+To run the validation driver, see [GEMM validation instructions](docs/GEMM_VALIDATION_DRIVER.md).
 
 ---
 
@@ -66,18 +62,15 @@ Current limitations:
 
 ### 1. `cuda_kernels/matmul_suite.cu` — CUDA Kernel Engineering
 
-Five progressively optimized GEMM kernels for N=4096 on T4, each targeting a specific bottleneck:
+Five progressively optimized GEMM kernels for N=4096, each targeting a different data-reuse or compute mechanism:
 
-| Kernel | Technique | GFLOPS (T4) | % cuBLAS | Bottleneck removed |
-|--------|-----------|-------------|----------|-------------------|
-| K0: Naive | Baseline | 65 | 0.1% | — |
-| K1: Shared Memory Tiled | 32×32 SHMEM tile | 5,800 | 13.1% | Redundant HBM reads (32× reduction) |
-| K2: Register Tiled | 4×4 output tile/thread | 6,900 | 15.6% | SHMEM→register bandwidth |
-| K3: Vectorized | `float4` global loads | 7,000 | 15.9% | Instruction count for loads |
-| K4: WMMA Tensor Core | FP16 WMMA API | 33,000 | 74.8% | FP32 → tensor core pipeline |
-| cuBLAS (reference) | CUTLASS (vendor) | 44,100 | 100% | — |
+- **K0:** naive output-per-thread baseline
+- **K1:** shared-memory tiled GEMM
+- **K2:** register-tiled GEMM
+- **K3:** vectorized `float4` loads/stores
+- **K4:** WMMA Tensor Core path using FP16 inputs and FP32 accumulation
 
-> **Why K0 achieves only 0.1% of peak:** Naive GEMM arithmetic intensity is 0.25 FLOP/Byte (each multiply-add reads two floats from HBM with no reuse). T4 bandwidth ceiling at this OI = 0.25 × 280 = 70 GFLOPS. The kernel is purely bandwidth-bound before any compute happens.
+Per-kernel performance values are intentionally withheld until the precision-matched validator in `cuda_kernels/matmul_validation.cu` produces a passing, reproducible CSV. See [the benchmark audit](docs/GEMM_BENCHMARK_AUDIT.md).
 
 ```bash
 nvcc -O3 -arch=sm_75 -lcublas cuda_kernels/matmul_suite.cu -o matmul_bench
@@ -154,7 +147,7 @@ visualize_nsight_report(report, 'nsight_analysis.png')
 
 Derives prefill/decode behavior from first principles rather than running inference directly. The core result this module proves from math:
 
-**LLM decode at batch=1 is memory-bandwidth-limited on every GPU today.**
+**Model-based inference analysis (not a measured runtime benchmark):** batch-1 decode can become memory-bandwidth-limited depending on model, cache behavior, and serving implementation.
 
 ```
 Bytes loaded per decode step  = model_weights + KV_cache  (~14 GB for Llama-7B FP16)
@@ -165,7 +158,7 @@ T4 ridge point (FP16)         = 65 TFLOPS / 280 GB/s ≈ 232 FLOP/Byte
 0.36 << 232 → deeply memory-bound, compute is idle
 ```
 
-Batching to 16 loads the same 14 GB of weights but processes 16 tokens simultaneously → ~32× throughput improvement.
+The script estimates how batching changes the arithmetic-intensity and memory-traffic picture. Its token-throughput outputs are analytical estimates, not measurements from a running LLM serving stack.
 
 **Supported models:** GPT-2, GPT-2 XL, Llama-2 7B/13B/70B, Llama-3 8B/70B, Mistral 7B, Mixtral 8×7B, GPT-4 (estimate)
 
@@ -185,6 +178,34 @@ python main.py --module report
 # → report_output/gpu_research_report.html
 # → report_output/benchmark_results.json
 ```
+
+---
+
+## New Validation Workloads
+
+### GEMM validation
+
+Apply the small source guard before compiling the new driver:
+
+```bash
+git apply patches/0001-guard-legacy-main.patch
+mkdir -p results/benchmarks
+nvcc -O3 -std=c++17 -arch=sm_75 -lcublas \
+  cuda_kernels/matmul_validation.cu -o matmul_validation
+./matmul_validation results/benchmarks/gemm_validation.csv
+```
+
+Change `sm_75` to match the target GPU. This has not yet been compiled or run in this environment; the generated CSV must pass correctness checks before performance figures are published.
+
+### CUDA softmax
+
+The branch adds a row-wise FP32 softmax extension and comparison script:
+
+```bash
+python benchmarks/bench_softmax.py --verbose-build
+```
+
+The script requires CUDA-enabled PyTorch, a compatible local CUDA toolkit and `nvcc`. It checks results against `torch.softmax` and records timings to `results/softmax_benchmark.csv`. See [softmax instructions](docs/README_SOFTMAX_INSERT.md).
 
 ---
 
@@ -264,7 +285,7 @@ Nsight profiling on Colab T4 failed because the environment uses a libcuda stub 
 > A 32×32 thread block computes 1,024 output elements. Without tiling: 2 × 32 × 1,024 = 65,536 HBM loads. With tiling: two 32×32 tiles (2,048 elements) loaded once, reused across 32 accumulation steps. Reuse factor = tile side length = 32.
 
 **"How do you know LLM decode is memory-bound?"**
-> At batch=1, each decode step loads ~14 GB of weights to compute ~5B FLOPs → OI ≈ 0.36 FLOP/Byte. T4's FP16 ridge point = 280 GB/s ÷ 65 TFLOPS ≈ 4.3 FLOP/Byte. Since 0.36 << 4.3, the GPU is idle on compute for >99% of the time. The memory bus is the bottleneck, not the tensor cores.
+> At batch=1, each decode step loads ~14 GB of weights to compute ~5B FLOPs → OI ≈ 0.36 FLOP/Byte. Using the stated nominal values, the compute-to-bandwidth ridge point is approximately 65,000 GFLOP/s ÷ 280 GB/s ≈ 232 FLOP/Byte. A modelled operational intensity of 0.36 FLOP/Byte is far below that point, suggesting memory traffic may dominate the idealized scenario; this is an analytical inference, not a measured utilization result.
 
 **"What does `stall_long_scoreboard` mean in Nsight?"**
 > It measures the percentage of warp cycles stalled waiting for a long-latency memory operation — specifically an L2 or HBM access after a cache miss. When this metric exceeds 40%, the kernel is memory-latency-bound. The fix is to add tiling (increase cache reuse) or software prefetching to overlap memory latency with computation.
