@@ -187,10 +187,9 @@ python main.py --module report
 
 ### GEMM validation
 
-Apply the small source guard before compiling the new driver:
+The feature branch already includes the source guard required to reuse the kernel file. Do not apply the patch again while testing this branch.
 
 ```bash
-git apply patches/0001-guard-legacy-main.patch
 mkdir -p results/benchmarks
 nvcc -O3 -std=c++17 -arch=sm_75 -lcublas \
   cuda_kernels/matmul_validation.cu -o matmul_validation
