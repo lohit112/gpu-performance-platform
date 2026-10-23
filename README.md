@@ -278,11 +278,11 @@ Nsight profiling on Colab T4 failed because the environment uses a libcuda stub 
 
 ## What an NVIDIA engineer will ask
 
-**"Why does your naive MatMul only achieve 0.1% of peak FLOPS?"**
-> Arithmetic intensity of naive NxN GEMM = 0.25 FLOP/Byte (two HBM loads per FMA, no data reuse). T4 bandwidth ceiling at OI=0.25 is 0.25 × 280 = 70 GFLOPS. We measure 65 GFLOPS — 93% of the bandwidth ceiling, exactly what the roofline predicts. The kernel is not compute-limited at all.
+**"How do you establish the naive GEMM bottleneck?"**
+> Start from a theoretical arithmetic-intensity model, then check it against a real Nsight Compute capture and a repeatable measurement. The old README's 65 GFLOP/s figure is historical and unverified in this branch, so it is not used as proof until the new CSV and real counter data are available.
 
 **"Why does tiling reduce memory traffic by 32×?"**
-> A 32×32 thread block computes 1,024 output elements. Without tiling: 2 × 32 × 1,024 = 65,536 HBM loads. With tiling: two 32×32 tiles (2,048 elements) loaded once, reused across 32 accumulation steps. Reuse factor = tile side length = 32.
+> At source level, a 32×32 output tile can reuse a 32×32 input tile of A and B across 32 multiply-accumulate steps. That describes potential reuse, not a measured 32× reduction in DRAM traffic. Use Nsight Compute counters to quantify actual memory traffic and cache behavior.
 
 **"How do you know LLM decode is memory-bound?"**
 > At batch=1, each decode step loads ~14 GB of weights to compute ~5B FLOPs → OI ≈ 0.36 FLOP/Byte. Using the stated nominal values, the compute-to-bandwidth ridge point is approximately 65,000 GFLOP/s ÷ 280 GB/s ≈ 232 FLOP/Byte. A modelled operational intensity of 0.36 FLOP/Byte is far below that point, suggesting memory traffic may dominate the idealized scenario; this is an analytical inference, not a measured utilization result.
