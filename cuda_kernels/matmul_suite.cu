@@ -367,6 +367,7 @@ static float gpu_time_ms(cudaEvent_t start, cudaEvent_t stop) {
 }
 
 /* ─── Main ───────────────────────────────────────────────────────────────── */
+#ifndef GPU_PERF_LIBRARY_ONLY
 int main() {
     printf("\n========================================================\n");
     printf("  GEMM Benchmark Suite — N=%d, FP32 (K4: FP16 TC)\n", N);
@@ -547,3 +548,4 @@ int main() {
     free(h_A); free(h_B);
     return 0;
 }
+#endif  // GPU_PERF_LIBRARY_ONLY
