@@ -42,6 +42,8 @@ The previous headline performance tables have been removed while the measurement
 
 The new validation runner compares K0–K3 against cuBLAS FP32 and K4 against a separate FP16-input / FP32-accumulation cuBLAS reference. It checks numerical error before timing and emits a CSV with GPU identity, dtype, median/min/max timing and correctness status. **No new performance claim is made until this runner compiles and passes on a real NVIDIA GPU.**
 
+The feature branch already includes the small `GPU_PERF_LIBRARY_ONLY` guard needed to reuse the kernel source. Do not apply that patch again when testing this branch.
+
 To run the validation driver, see [GEMM validation instructions](docs/GEMM_VALIDATION_DRIVER.md).
 
 ---
