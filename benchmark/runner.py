@@ -27,6 +27,7 @@ def _run(command: list[str], cwd: Path, timeout: int) -> subprocess.CompletedPro
 
 
 def run_cuda_benchmark(repo_root: str | Path, *, arch: str = "sm_75",
+                       size: int = 4096,
                        output_path: str | Path = "results/benchmarks/latest.json",
                        timeout_seconds: int = 900) -> dict[str, Any]:
     root = Path(repo_root).resolve()
@@ -35,6 +36,8 @@ def run_cuda_benchmark(repo_root: str | Path, *, arch: str = "sm_75",
         raise RuntimeError(f"CUDA source not found: {source}")
     if not arch.startswith("sm_") or not arch[3:].isdigit():
         raise ValueError("arch must look like sm_75, sm_80, or sm_90.")
+    if size <= 0:
+        raise ValueError("size must be a positive integer.")
     nvcc = shutil.which("nvcc")
     if not nvcc:
         raise RuntimeError(
@@ -44,7 +47,7 @@ def run_cuda_benchmark(repo_root: str | Path, *, arch: str = "sm_75",
     build_dir = root / "build"
     build_dir.mkdir(parents=True, exist_ok=True)
     binary = build_dir / "matmul_bench"
-    flags = ["-O3", "-lineinfo", f"-arch={arch}", "-lcublas"]
+    flags = ["-O3", "-lineinfo", f"-arch={arch}", f"-DN={size}", "-lcublas"]
     compiled = _run([nvcc, *flags[:-1], str(source), flags[-1], "-o", str(binary)],
                     cwd=root, timeout=timeout_seconds)
     executed = _run([str(binary)], cwd=root, timeout=timeout_seconds)
@@ -71,12 +74,14 @@ def run_cuda_benchmark(repo_root: str | Path, *, arch: str = "sm_75",
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--arch", default="sm_75")
+    parser.add_argument("--size", type=int, default=4096,
+                        help="Square GEMM dimension N (compiles with -DN=N).")
     parser.add_argument("--output", default="results/benchmarks/latest.json")
     parser.add_argument("--timeout", type=int, default=900)
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
-    run_cuda_benchmark(root, arch=args.arch, output_path=args.output,
-                       timeout_seconds=args.timeout)
+    run_cuda_benchmark(root, arch=args.arch, size=args.size,
+                       output_path=args.output, timeout_seconds=args.timeout)
     return 0
 
 
