@@ -228,8 +228,8 @@ python main.py --module nsight \
   --nsight-csv results/profiling/<capture-name>.csv
 ~~~
 
-The parser supports both detail-style rows (Metric Name/Metric Value) and
-raw CSV rows where metric names are columns. It tracks which metrics were
+The parser supports detail-style rows when Metric Name contains raw metric
+identifiers, and raw CSV rows where metric names are columns. It tracks which metrics were
 actually collected; missing counters are shown as unavailable rather than as
 measured zero. Metric availability varies by architecture and Nsight version.
 
