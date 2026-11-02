@@ -24,10 +24,12 @@ python -m benchmark.compare \\
   --output results/comparison.csv
 \`\`\`
 
-Only compare artifacts with matching GPU, matrix shape, precision, accumulation
-type, and measurement conditions. The CSV retains each artifact's path and
-hardware metadata so incompatible runs can be identified rather than silently
-mixed.
+The CSV assigns a comparison_group using GPU, compute capability, matrix shape,
+layout, kernel input/accumulation/output precision, warm-up count, and timed
+iteration count. It flags run-level mismatches rather than silently mixing
+different GPUs or measurement protocols. FP16-input and FP32 kernels appear in
+separate precision groups. Preserve each raw JSON artifact and compare
+kernel-only latency/GFLOPS within matching groups.
 
 For an orchestrated run, use `bash scripts/run_full_benchmark.sh sm_75 4096 5 20`.
 The CUDA backend is mandatory; CUTLASS and Triton are run only when their
