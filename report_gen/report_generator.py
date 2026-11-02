@@ -137,6 +137,8 @@ class ReportGenerator:
                 "benchmark_latency_ms": benchmark_row["latency_ms"],
                 "benchmark_gflops": benchmark_row["gflops"],
                 "input_precision": benchmark_row["input_precision"],
+                "accumulation_precision": benchmark_row["accumulation_precision"],
+                "output_precision": benchmark_row["output_precision"],
             })
 
         if self.empirical_roofline_rows:
@@ -237,7 +239,7 @@ class ReportGenerator:
             lines.extend([
                 "",
                 "| Kernel | SM throughput (%) | Occupancy (%) | L1 hit (%) | L2 hit (%) | Tensor Core (%) |",
-                "|---|---:|---:|---:|---:|---:|",
+                "|---|---|---:|---:|---:|---:|---:|",
             ])
             for metric in self.nsight_report.kernels:
                 lines.append(
@@ -258,12 +260,13 @@ class ReportGenerator:
                 "",
                 "### Measured GEMM DRAM traffic and arithmetic intensity",
                 "",
-                "| Kernel | DRAM read (MiB) | DRAM write (MiB) | Total DRAM (MiB) | Arithmetic intensity (FLOP/byte) | Benchmark GFLOP/s |",
+                "| Kernel | Input / accumulation | DRAM read (MiB) | DRAM write (MiB) | Total DRAM (MiB) | Arithmetic intensity (FLOP/byte) | Benchmark GFLOP/s |",
                 "|---|---:|---:|---:|---:|---:|",
             ])
             for row in self.empirical_roofline_rows:
                 lines.append(
                     f"| {row['kernel_id']} — {row['kernel']} | "
+                    f"{row['input_precision']} / {row['accumulation_precision']} | "
                     f"{row['dram_bytes_read'] / (1024 ** 2):.2f} | "
                     f"{row['dram_bytes_write'] / (1024 ** 2):.2f} | "
                     f"{row['dram_bytes_total'] / (1024 ** 2):.2f} | "
