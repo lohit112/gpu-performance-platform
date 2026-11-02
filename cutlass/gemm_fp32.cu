@@ -187,7 +187,8 @@ int main() {
                 "\"cuda_runtime_version\":%d,\"cuda_driver_version\":%d,"
                 "\"cutlass_revision\":\"%s\"},\n",
                 properties.name, properties.major, properties.minor,
-                M, WARMUP, ITERATIONS, runtime_version, driver_version, CUTLASS_REVISION);
+                M, WARMUP, ITERATIONS, runtime_version, driver_version, CUTLASS_REVISION,
+                M, N, K);
     std::printf("  \"reference\": {\"name\":\"cuBLAS SGEMM FP32\","
                 "\"latency_ms\":%.6f,\"gflops\":%.6f},\n",
                 reference_ms, reference_gflops);
