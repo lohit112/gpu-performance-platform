@@ -52,3 +52,15 @@ def test_failed_validation_is_preserved():
     data["results"][0]["validation"]["passed"] = False
     validate_benchmark(data)
     assert data["results"][0]["validation"]["passed"] is False
+
+
+def test_cuda_runner_refuses_reference_fallback_when_nvcc_missing(tmp_path, monkeypatch):
+    from benchmark import runner
+
+    source_dir = tmp_path / "cuda_kernels"
+    source_dir.mkdir()
+    (source_dir / "matmul_suite.cu").write_text("int main() { return 0; }", encoding="utf-8")
+    monkeypatch.setattr(runner.shutil, "which", lambda _: None)
+
+    with pytest.raises(RuntimeError, match="No synthetic/reference table"):
+        runner.run_cuda_benchmark(tmp_path, arch="sm_75", size=64)
