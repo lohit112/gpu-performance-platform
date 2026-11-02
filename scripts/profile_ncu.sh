@@ -4,9 +4,11 @@ set -euo pipefail
 BINARY="$1"
 OUT_DIR="$2"
 KERNEL_REGEX="$3"
+NCU_SET="$4"
 if [ -z "$BINARY" ]; then BINARY="build/matmul_bench"; fi
 if [ -z "$OUT_DIR" ]; then OUT_DIR="results/profiling"; fi
 if [ -z "$KERNEL_REGEX" ]; then KERNEL_REGEX="matmul_.*"; fi
+if [ -z "$NCU_SET" ]; then NCU_SET="full"; fi
 
 if ! command -v ncu >/dev/null 2>&1; then
   echo "ERROR: Nsight Compute CLI (ncu) is not in PATH." >&2
@@ -26,7 +28,7 @@ PREFIX="$OUT_DIR/"$STAMP"_profile"
 ncu \
   --kernel-name-base demangled \
   --kernel-name "regex:$KERNEL_REGEX" \
-  --set basic \
+  --set "$NCU_SET" \
   --export "$PREFIX.ncu-rep" \
   "$BINARY"
 
