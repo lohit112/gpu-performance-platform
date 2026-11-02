@@ -35,7 +35,9 @@ METRICS GLOSSARY (the 12 that matter most):
   stall_barrier                   → % cycles at __syncthreads() waiting
   stall_math_throttle             → % cycles stalled on FP unit full pipeline
   pipe_tensor_cycles_active       → Tensor core utilization (%)
-  dram_throughput                 → % of peak HBM bandwidth used
+  dram_throughput                 → % of peak DRAM bandwidth used
+  dram__bytes_read.sum            → measured DRAM bytes read
+  dram__bytes_write.sum           → measured DRAM bytes written
   shared_efficiency               → Shared memory efficiency (% of ideal)
 """
 
@@ -55,6 +57,39 @@ import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 matplotlib.rcParams['font.family'] = 'DejaVu Sans'
+
+
+def _parse_metric_value(raw_value: object, unit: str = "",
+                        field_name: str = "") -> float | None:
+    """Parse a numeric Nsight value and normalize DRAM byte units to bytes."""
+    raw = str(raw_value).strip().replace(",", "")
+    match = re.fullmatch(
+        r"([+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][+-]?\\d+)?)\\s*([A-Za-zµμ%/]*)",
+        raw,
+    )
+    if not match:
+        return None
+    try:
+        value = float(match.group(1))
+    except ValueError:
+        return None
+    if not np.isfinite(value):
+        return None
+
+    metric_unit = (unit or match.group(2) or "").strip().lower()
+    metric_unit = re.sub(r"[\\s_/]+", "", metric_unit)
+    if field_name in {"dram_bytes_read", "dram_bytes_write"}:
+        multipliers = {
+            "": 1.0, "b": 1.0, "byte": 1.0, "bytes": 1.0,
+            "kbyte": 1e3, "kbytes": 1e3, "kb": 1e3,
+            "mbyte": 1e6, "mbytes": 1e6, "mb": 1e6,
+            "gbyte": 1e9, "gbytes": 1e9, "gb": 1e9,
+            "kib": 1024.0, "mib": 1024.0 ** 2, "gib": 1024.0 ** 3,
+        }
+        if metric_unit not in multipliers or value < 0:
+            return None
+        value *= multipliers[metric_unit]
+    return value
 
 
 @dataclass
@@ -90,7 +125,9 @@ class NsightMetrics:
     # ── Memory hierarchy hit rates ───────────────────────────────────────────
     l1_hit_rate_pct:        float = 0.0   # L1 texture/load cache hit rate
     l2_hit_rate_pct:        float = 0.0   # L2 unified cache hit rate
-    dram_throughput_pct:    float = 0.0   # % of peak HBM bandwidth achieved
+    dram_throughput_pct:    float = 0.0   # % of peak DRAM bandwidth achieved
+    dram_bytes_read:        float = 0.0   # measured DRAM bytes read by this kernel
+    dram_bytes_write:       float = 0.0   # measured DRAM bytes written by this kernel
 
     # ── Shared memory ────────────────────────────────────────────────────────
     shmem_efficiency_pct:   float = 0.0   # efficiency = useful / total SHMEM ops
@@ -139,6 +176,8 @@ class NsightReport:
                 'l2_hit_rate_pct',
             'dram__throughput.avg.pct_of_peak_sustained_elapsed':
                 'dram_throughput_pct',
+            'dram__bytes_read.sum': 'dram_bytes_read',
+            'dram__bytes_write.sum': 'dram_bytes_write',
             'smsp__warp_issue_stalled_mio_throttle_per_warp_active.pct':
                 'stall_mio_throttle',
             'smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct':
@@ -181,27 +220,23 @@ class NsightReport:
                     #   (2) raw page CSV: one row per kernel, metric names are CSV columns
                     metric_name = row.get('Metric Name', '').strip()
                     if metric_name:
-                        candidates = [(metric_name, row.get('Metric Value', ''))]
+                        candidates = [(metric_name, row.get('Metric Value', ''), row.get('Metric Unit', ''))]
                     else:
-                        candidates = [(name, row.get(name, '')) for name in METRIC_MAP]
+                        candidates = [(name, row.get(name, ''), '') for name in METRIC_MAP]
 
-                    for name, raw_value in candidates:
+                    for name, raw_value, metric_unit in candidates:
                         if name not in METRIC_MAP or raw_value is None:
                             continue
-                        metric_val = str(raw_value).strip().replace(',', '')
-                        if not metric_val or metric_val in {'-', 'N/A', 'n/a'}:
+                        field_name = METRIC_MAP[name]
+                        val = _parse_metric_value(raw_value, metric_unit, field_name)
+                        if val is None:
                             continue
-                        try:
-                            val = float(metric_val)
-                            field_name = METRIC_MAP[name]
-                            if field_name == "registers_per_thread":
-                                setattr(kernels[kernel_name], field_name, int(round(val)))
-                            else:
-                                setattr(kernels[kernel_name], field_name, val)
-                            if field_name not in kernels[kernel_name].available_metrics:
-                                kernels[kernel_name].available_metrics.append(field_name)
-                        except (ValueError, TypeError):
-                            continue
+                        if field_name == "registers_per_thread":
+                            setattr(kernels[kernel_name], field_name, int(round(val)))
+                        else:
+                            setattr(kernels[kernel_name], field_name, val)
+                        if field_name not in kernels[kernel_name].available_metrics:
+                            kernels[kernel_name].available_metrics.append(field_name)
 
         except FileNotFoundError:
             raise FileNotFoundError(f"Nsight Compute CSV not found: {csv_path}")
@@ -600,6 +635,8 @@ def run_ncu_profiling(
             "sm__throughput.avg.pct_of_peak_sustained_elapsed",
             "sm__warps_active.avg.pct_of_peak_sustained_active",
             "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed",
+            "dram__bytes_read.sum",
+            "dram__bytes_write.sum",
             "l1tex__t_sector_hit_rate.pct",
             "lts__t_sector_hit_rate.pct",
             "dram__throughput.avg.pct_of_peak_sustained_elapsed",
