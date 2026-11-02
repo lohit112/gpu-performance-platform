@@ -250,6 +250,27 @@ measured zero. Metric availability varies by architecture and Nsight version.
 
 You can open the native .ncu-rep report with the Nsight Compute GUI.
 
+### One-command Tesla T4 validation
+
+On a Tesla T4 environment with `nvcc`, `compute-sanitizer`, and (optionally)
+Nsight Compute installed:
+
+~~~bash
+bash scripts/validate_t4.sh
+~~~
+
+The script runs Compute Sanitizer on an aligned N=256 workload, then runs the
+full N=4096 cross-backend benchmark. It captures and parses full Nsight data by
+default. Set `RUN_NCU=0` to skip the profiler stage when Nsight Compute is not
+available:
+
+~~~bash
+RUN_NCU=0 bash scripts/validate_t4.sh
+~~~
+
+The script fails on a non-T4 GPU or a failed correctness/memory-safety check; it
+does not replace missing hardware results with demo values.
+
 ## Roofline analysis
 
 ~~~bash
