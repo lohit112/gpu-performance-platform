@@ -33,6 +33,12 @@
 #ifndef ITERATIONS
 #define ITERATIONS 20
 #endif
+#ifndef CUTLASS_ARCH_TAG
+#define CUTLASS_ARCH_TAG cutlass::arch::Sm75
+#endif
+#ifndef CUTLASS_REVISION
+#define CUTLASS_REVISION "not-recorded"
+#endif
 
 #define CUDA_CHECK(call) do { \
     cudaError_t e = (call); \
@@ -60,7 +66,7 @@ int main() {
         float, RowMajor,
         float,
         cutlass::arch::OpClassSimt,
-        cutlass::arch::Sm75
+        CUTLASS_ARCH_TAG
     >;
 
     constexpr int M = GEMM_N;
@@ -178,9 +184,10 @@ int main() {
     std::printf("  \"metadata\": {\"backend\":\"cutlass\",\"gpu_name\":\"%s\","
                 "\"compute_capability\":\"%d.%d\",\"matrix_size\":%d,"
                 "\"warmup_iterations\":%d,\"timed_iterations\":%d,"
-                "\"cuda_runtime_version\":%d,\"cuda_driver_version\":%d},\n",
+                "\"cuda_runtime_version\":%d,\"cuda_driver_version\":%d,"
+                "\"cutlass_revision\":\"%s\"},\n",
                 properties.name, properties.major, properties.minor,
-                M, WARMUP, ITERATIONS, runtime_version, driver_version);
+                M, WARMUP, ITERATIONS, runtime_version, driver_version, CUTLASS_REVISION);
     std::printf("  \"reference\": {\"name\":\"cuBLAS SGEMM FP32\","
                 "\"latency_ms\":%.6f,\"gflops\":%.6f},\n",
                 reference_ms, reference_gflops);
