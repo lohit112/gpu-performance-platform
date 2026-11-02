@@ -490,17 +490,22 @@ int main() {
         CUDA_CHECK(cudaEventCreate(&convert_start));
         CUDA_CHECK(cudaEventCreate(&convert_stop));
 
-        // One untimed warm-up, followed by a separately measured preprocessing pass.
-        fp32_to_fp16<<<blocks, threads>>>(d_A, d_A_half, total);
-        fp32_to_fp16<<<blocks, threads>>>(d_B, d_B_half, total);
+        // Match the GEMM timing protocol: warm up, then average repeated conversions.
+        for (int i = 0; i < WARMUP; ++i) {
+            fp32_to_fp16<<<blocks, threads>>>(d_A, d_A_half, total);
+            fp32_to_fp16<<<blocks, threads>>>(d_B, d_B_half, total);
+        }
         CUDA_CHECK(cudaDeviceSynchronize());
 
         CUDA_CHECK(cudaEventRecord(convert_start));
-        fp32_to_fp16<<<blocks, threads>>>(d_A, d_A_half, total);
-        fp32_to_fp16<<<blocks, threads>>>(d_B, d_B_half, total);
+        for (int i = 0; i < TIMED; ++i) {
+            fp32_to_fp16<<<blocks, threads>>>(d_A, d_A_half, total);
+            fp32_to_fp16<<<blocks, threads>>>(d_B, d_B_half, total);
+        }
         CUDA_CHECK(cudaEventRecord(convert_stop));
         CUDA_CHECK(cudaEventSynchronize(convert_stop));
         CUDA_CHECK(cudaEventElapsedTime(&fp16_input_conversion_ms, convert_start, convert_stop));
+        fp16_input_conversion_ms /= TIMED;
 
         CUDA_CHECK(cudaEventDestroy(convert_start));
         CUDA_CHECK(cudaEventDestroy(convert_stop));
