@@ -40,6 +40,10 @@ using namespace nvcuda;
 #ifndef N
 #define N         4096
 #endif
+
+static_assert(N > 0, "N must be positive.");
+static_assert(N % 16 == 0,
+              "N must be divisible by 16: K3 float4 alignment and K4 WMMA tiles require it.");
 #define TILE_K0   16
 #define TILE_K1   32
 #define BLOCK_M   64
