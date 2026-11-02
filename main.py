@@ -96,7 +96,8 @@ def run_full_report(args):
     generator = ReportGenerator(
         output_dir=args.out_dir,
         author="Lohit Reddy",
-        benchmark_json=args.benchmark_json,
+        benchmark_json=str((ROOT / args.benchmark_json).resolve())
+        if not Path(args.benchmark_json).is_absolute() else args.benchmark_json,
         nsight_csv=args.nsight_csv,
         include_demo_data=args.demo_data,
     )
@@ -157,7 +158,7 @@ def main() -> int:
             run_llm(args)
             try:
                 run_kernels(args)
-            except (RuntimeError, ValueError) as exc:
+            except (OSError, RuntimeError, ValueError) as exc:
                 print(f"\nLive CUDA benchmark not produced: {exc}")
                 print("No fallback or synthetic performance values were substituted.")
             run_full_report(args)
