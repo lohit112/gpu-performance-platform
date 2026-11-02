@@ -26,6 +26,7 @@ def collect_rows(paths: list[str | Path]) -> list[dict[str, Any]]:
                 }, sort_keys=True),
                 "warmup_iterations": meta["warmup_iterations"],
                 "timed_iterations": meta["timed_iterations"],
+                "fp16_input_conversion_ms": meta.get("fp16_input_conversion_ms", ""),
                 "reference_name": data["reference"].get("name", "unknown"),
                 "reference_input_precision": data["reference"]["input_precision"],
                 "reference_accumulation_precision": data["reference"]["accumulation_precision"],
