@@ -55,7 +55,41 @@ if [[ -d third_party/cutlass/include ]]; then
       -Ithird_party/cutlass/include cutlass/gemm_fp32.cu -lcublas \
       -o "$CUTLASS_BIN"
     "$CUTLASS_BIN" > "$CUTLASS_JSON.stdout.txt"
-    python -c 'import json,sys; from pathlib import Path; from benchmark.schema import extract_embedded_json; p=Path(sys.argv[1]); d=extract_embedded_json(p.with_suffix(p.suffix + ".stdout.txt").read_text()); p.write_text(json.dumps(d,indent=2)+"\n")' "$CUTLASS_JSON"
+    CUTLASS_NVCC_VERSION="$(nvcc --version | tail -n 1)" \
+    CUTLASS_SOURCE_SHA="$(sha256sum cutlass/gemm_fp32.cu | awk '{print $1}')" \
+    CUTLASS_COMPILE_ARCH="$ARCH" CUTLASS_TARGET_TAG="$CUTLASS_TAG" \
+    CUTLASS_REVISION="$CUTLASS_REV" CUTLASS_WARMUP="$WARMUP" \
+    CUTLASS_ITERATIONS="$ITERATIONS" \
+    python - "$CUTLASS_JSON" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+from benchmark.schema import extract_embedded_json
+
+output_path = Path(sys.argv[1])
+stdout_path = output_path.with_suffix(output_path.suffix + ".stdout.txt")
+data = extract_embedded_json(stdout_path.read_text(encoding="utf-8"))
+metadata = data["metadata"]
+metadata.update({
+    "compiler": "nvcc",
+    "compiler_version": os.environ["CUTLASS_NVCC_VERSION"],
+    "compile_arch": os.environ["CUTLASS_COMPILE_ARCH"],
+    "cutlass_arch_tag": os.environ["CUTLASS_TARGET_TAG"],
+    "cutlass_revision": os.environ["CUTLASS_REVISION"],
+    "source_sha256": os.environ["CUTLASS_SOURCE_SHA"],
+    "compiler_flags": [
+        "-O3", "-std=c++17", "-lineinfo",
+        "-arch=" + os.environ["CUTLASS_COMPILE_ARCH"],
+        "-DGEMM_N=" + str(metadata["matrix_size"]),
+        "-DWARMUP=" + os.environ["CUTLASS_WARMUP"],
+        "-DITERATIONS=" + os.environ["CUTLASS_ITERATIONS"],
+        "-Ithird_party/cutlass/include", "-lcublas",
+    ],
+})
+output_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+print("Validated CUTLASS artifact:", output_path)
+PY
     ARTIFACTS="$ARTIFACTS $CUTLASS_JSON"
   else
     echo "CUTLASS skipped: set CUTLASS_ARCH_TAG for this architecture."
