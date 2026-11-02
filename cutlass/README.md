@@ -19,9 +19,12 @@ matrix dimensions, precision, and benchmark settings with every published run.
 
 \`\`\`bash
 mkdir -p build
-nvcc -O3 -std=c++17 -lineinfo -arch=sm_75 \\
-  -Ithird_party/cutlass/include \\
-  cutlass/gemm_fp32.cu -lcublas \\
+CUTLASS_REVISION="$(git -C third_party/cutlass rev-parse --short HEAD)"
+nvcc -O3 -std=c++17 -lineinfo -arch=sm_75 \
+  -DCUTLASS_ARCH_TAG=cutlass::arch::Sm75 \
+  -DCUTLASS_REVISION=\"$CUTLASS_REVISION\" \
+  -Ithird_party/cutlass/include \
+  cutlass/gemm_fp32.cu -lcublas \
   -o build/cutlass_gemm_fp32
 ./build/cutlass_gemm_fp32
 \`\`\`
@@ -45,3 +48,9 @@ artifact from the handwritten CUDA suite.
 **Experimental adapter — not yet compiled or measured in this repository workflow.**
 Do not cite CUTLASS performance until the source is built, run, correctness
 validated, and captured on a real GPU.
+
+
+For an A100 build, use a compatible CUTLASS architecture tag and CUDA target,
+for example `-DCUTLASS_ARCH_TAG=cutlass::arch::Sm80 -arch=sm_80`. Validate the
+H100 configuration against the installed CUTLASS release before using
+`Sm90`; do not assume every release has identical SIMT defaults.
