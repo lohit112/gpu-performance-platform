@@ -5,7 +5,7 @@
  *
  * KERNELS:
  *   K0: Naive MatMul        — baseline, illustrates the memory-bound problem
- *   K1: Shared Memory Tiled — eliminates redundant HBM reads via SHMEM reuse
+ *   K1: Shared Memory Tiled — stages input tiles for explicit block-level reuse
  *   K2: Register Tiled      — 2D per-thread output tile, reduces SHMEM traffic
  *   K3: Vectorized Load     — real float4 (128-bit) global loads, 4× fewer instr
  *   K4: WMMA Tensor Core    — FP16 tensor cores (Volta+ / sm_70+)
@@ -100,8 +100,10 @@ __global__ void matmul_naive(const float* A, const float* B, float* C, int n) {
 /* ═══════════════════════════════════════════════════════════════════════════
  * KERNEL 1: SHARED MEMORY TILED MatMul
  * ═══════════════════════════════════════════════════════════════════════════
- * Each 32×32 thread block loads one TILE_K1×TILE_K1 tile of A and B into
- * shared memory. All 1024 threads reuse those 1024 values → 32× HBM reduction.
+ * Each 32×32 thread block stages one TILE_K1×TILE_K1 tile of A and B in
+ * shared memory. A values are reused across output columns and B values across
+ * output rows. This reduces redundant global load requests; the actual DRAM
+ * traffic reduction depends on the GPU cache hierarchy and must be measured.
  *
  * Idealized global-input arithmetic intensity is TILE_K1 / 4 = 8 FLOP/Byte:
  * two TILE_K1×TILE_K1 FP32 input tiles are loaded for 2×TILE_K1³ FLOPs.
