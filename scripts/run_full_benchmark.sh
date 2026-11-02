@@ -24,7 +24,10 @@ python -m benchmark.runner --arch "$ARCH" --size "$SIZE" --output "$CUDA_JSON"
 ARTIFACTS="$CUDA_JSON"
 
 if [[ -d third_party/cutlass/include ]]; then
-  CUTLASS_TAG="$CUTLASS_ARCH_TAG"
+  CUTLASS_TAG=""
+  if printenv CUTLASS_ARCH_TAG >/dev/null 2>&1; then
+    CUTLASS_TAG="$(printenv CUTLASS_ARCH_TAG)"
+  fi
   if [ -z "$CUTLASS_TAG" ]; then
     case "$ARCH" in
       sm_75) CUTLASS_TAG=cutlass::arch::Sm75 ;;
