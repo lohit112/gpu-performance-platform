@@ -1,254 +1,321 @@
-# GPU Performance Engineering Platform
+# GPU Performance Optimization Platform
 
-A CUDA-focused engineering project for studying **GPU kernel optimization, memory behavior, roofline analysis, and LLM inference trade-offs**. It combines custom GEMM kernels with Python tools for profiling analysis, model-based inference estimates, and report generation.
+A reproducible GPU-kernel engineering project for comparing handwritten CUDA,
+NVIDIA CUTLASS, and Triton GEMM implementations. The platform combines
+numerical validation, CUDA-event timing, machine-readable benchmark artifacts,
+Nsight Compute report analysis, and roofline interpretation.
 
-[![CUDA](https://img.shields.io/badge/CUDA-kernel%20development-76B900?logo=nvidia&logoColor=white)](https://developer.nvidia.com/cuda-toolkit)
-[![Python](https://img.shields.io/badge/Python-analysis%20tools-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![PyTorch](https://img.shields.io/badge/PyTorch-inference%20modeling-EE4C2C?logo=pytorch&logoColor=white)](https://pytorch.org/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+The goal is not to claim that one implementation is always fastest. The goal is
+to measure each implementation under controlled conditions, preserve the
+precision and hardware context, and use profiler evidence to explain the result.
 
----
+## Project status
 
-## Overview
-
-GPU performance work is more than measuring elapsed time. Results are meaningful only when the workload, precision, hardware, reference implementation, and measurement method are clearly specified.
-
-This repository explores that workflow through five CUDA GEMM implementations and a set of analysis modules. The project is intended as a transparent engineering portfolio: kernel code, timing workflows, profiling parsers, analytical models, and generated reports are kept distinct so readers can tell **device measurements** from **model estimates** and **demo data**.
-
-### Engineering workflow
-
-```text
-Workload definition
-        |
-        v
-Hardware / precision assumptions
-        |
-        v
-CUDA kernel implementation -----> cuBLAS comparison
-        |                                  |
-        v                                  v
-CUDA event timing                  Numerical validation
-        |                                  |
-        +----------------+-----------------+
-                         |
-                         v
-              Nsight Compute analysis
-                         |
-                         v
-                Roofline interpretation
-                         |
-                         v
-             Reproducible report outputs
-```
-
-## What is included
-
-| Component | Purpose | Main files |
+| Component | Current implementation | Evidence status |
 |---|---|---|
-| CUDA GEMM suite | Compare progressively different matrix-multiplication strategies | `cuda_kernels/matmul_suite.cu` |
-| Roofline analysis | Model compute and memory ceilings and reason about arithmetic intensity | `roofline/roofline_model.py` |
-| Nsight Compute analysis | Parse profiler CSV data, summarize bottlenecks, and generate visual reports | `profiling/nsight_profiler.py` |
-| LLM inference profiler | Estimate memory footprint, KV-cache needs, latency, throughput, and cost from model assumptions | `llm_profiler/inference_profiler.py` |
-| Report generation | Export analysis outputs as Markdown, HTML, and JSON | `report_gen/report_generator.py` |
-| Unified CLI | Run one module or generate a combined report | `main.py` |
+| Handwritten CUDA GEMM | K0–K4: naive, shared-memory tiled, register tiled, float4, WMMA | Source updated; must be rebuilt and rerun on target GPU |
+| Correctness validation | Frobenius-relative error against cuBLAS FP32 reference; precision-specific tolerances | Runs before timing in the CUDA executable; latest source has not yet been hardware-verified |
+| Benchmark framework | Compile/run wrapper, strict JSON schema, raw stdout preservation, CSV comparison | CPU-testable Python components; CUDA execution requires NVIDIA GPU and nvcc |
+| Nsight Compute | Native report + CSV capture script; parser for detail and raw CSV layouts | Integration implemented; real .ncu-rep captures are not included by default |
+| Roofline | Hardware ceiling model and illustrative sample workloads | Demo/analytical only until calibration and DRAM-byte measurements are supplied |
+| CUTLASS | Optional FP32 SIMT device::Gemm adapter | Experimental; requires CUTLASS checkout, compilation, and GPU run |
+| Triton | Optional tiled FP32 GEMM | Experimental; requires CUDA-enabled PyTorch/Triton and GPU run |
+| LLM inference model | First-principles VRAM/latency/throughput estimator | Analytical estimates, not live serving measurements |
 
-## CUDA kernel progression
+**Important:** no benchmark numbers are embedded as fallback values. If CUDA tools or a
+GPU are unavailable, the live benchmark command fails with an actionable message
+instead of substituting historical estimates.
 
-The GEMM suite contains five implementations. Each illustrates a different optimization strategy; the table describes the implementation, not a claim that every version is faster on every GPU.
+## Architecture
 
-| Kernel | Technique | Main concept |
+~~~text
+                 GPU PERFORMANCE PLATFORM
+                             |
+          +------------------+------------------+
+          |                  |                  |
+          v                  v                  v
+      CUDA C++             CUTLASS             Triton
+       K0–K4             FP32 SIMT           tiled FP32
+          |                  |                  |
+          +------------------+------------------+
+                             |
+                             v
+                    Benchmark artifact
+                 JSON + raw console output
+                             |
+                +------------+------------+
+                |                         |
+                v                         v
+         Correctness report          Timing results
+                |                         |
+                +------------+------------+
+                             |
+                             v
+                      CSV comparison
+                             |
+             +---------------+---------------+
+             |                               |
+             v                               v
+       Nsight Compute                    Roofline
+       .ncu-rep + CSV                 measured data only
+             |                               |
+             +---------------+---------------+
+                             |
+                             v
+                      Report generator
+~~~
+
+## CUDA GEMM kernels
+
+The handwritten CUDA suite is in cuda_kernels/matmul_suite.cu.
+
+| Kernel | Technique | Main idea |
 |---|---|---|
-| **K0 — Naive** | One thread computes an output element | Baseline with little explicit data reuse |
-| **K1 — Shared-memory tiled** | Reuses input tiles staged in shared memory | Reduce repeated global-memory reads |
-| **K2 — Register tiled** | Each thread accumulates a small output tile | Reuse values in registers and reduce shared-memory traffic |
-| **K3 — Vectorized** | Uses `float4` memory accesses | Explore wider loads/stores and address-instruction overhead |
-| **K4 — WMMA Tensor Core** | FP16 inputs with FP32 accumulation | Explore Tensor Core execution and mixed-precision trade-offs |
+| K0 — Naive | One thread per output element | Baseline GEMM with no explicit block-level data reuse |
+| K1 — Shared-memory tiled | Stage A/B tiles in shared memory | Reuse loaded input tiles across threads in a block |
+| K2 — Register tiled | 4×4 output tile per thread | Reuse shared-memory operands across multiple register accumulators |
+| K3 — float4 vectorized | 128-bit vector loads/stores | Explore wider global-memory accesses and reduced address/load instruction count |
+| K4 — WMMA Tensor Core | FP16 inputs, FP32 accumulation | Use warp-level matrix multiply-accumulate operations |
 
-The current CUDA executable is configured around a fixed `N=4096` workload. Its edge-condition and precision behavior should be validated before treating the suite as a general-purpose GEMM implementation.
+### Correctness and precision
+
+The executable first computes a cuBLAS FP32 reference, runs each custom kernel,
+and calculates:
+
+\[
+E_F = \frac{\|C_{\text{kernel}}-C_{\text{reference}}\|_F}
+           {\|C_{\text{reference}}\|_F}
+\]
+
+K0–K3 use a relative-error tolerance of 1e-4; K4 uses 5e-3 to account for
+FP16 input quantization with FP32 accumulation. The benchmark is aborted if any
+kernel fails validation.
+
+K4's input precision differs from the FP32 cuBLAS reference. Its reported
+GFLOP/s and percentage of FP32 cuBLAS are useful throughput indicators, but
+they are **not a precision-matched comparison**. Do not interpret the ratio as
+an apples-to-apples numerical efficiency metric.
 
 ## Quick start
 
-### 1. Clone the repository
+### Python environment
 
-```bash
-git clone https://github.com/lohit112/gpu-performance-platform.git
-cd gpu-performance-platform
-```
+The general analysis modules require Python, NumPy, and Matplotlib. Install
+requirements.txt for the full existing environment, including LLM-model
+dependencies. For CPU-only unit tests:
 
-### 2. Install the Python dependencies
+~~~bash
+python -m pip install pytest numpy matplotlib
+python -m pytest -q
+~~~
 
-Use a Python environment compatible with the dependencies in `requirements.txt`.
+### Run the live CUDA benchmark
 
-```bash
-python -m venv .venv
+Requirements:
 
-# Linux / macOS
-source .venv/bin/activate
-
-# Windows PowerShell
-# .venv\Scripts\Activate.ps1
-
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-```
-
-For GPU-backed features, install a CUDA-enabled build of PyTorch compatible with your NVIDIA driver and toolkit. See the [official PyTorch installation selector](https://pytorch.org/get-started/locally/).
-
-### 3. Run an analysis module
-
-```bash
-# Generate the combined report
-python main.py
-
-# Individual modules
-python main.py --module roofline
-python main.py --module nsight
-python main.py --module llm
-python main.py --module kernels
-
-# Example analytical profile
-python main.py --module llm --model llama_70b --gpu H100_SXM
-```
-
-The report generator writes outputs under `report_output/` by default. Use the CLI's `--out-dir` option to choose another location.
-
-> **Important:** if the `kernels` module cannot find `nvcc`, the current CLI falls back to a legacy reference table so the rest of the application can run. That fallback is not a live benchmark and must not be cited as a measurement from the current machine.
-
-## Run the CUDA GEMM executable
-
-A supported NVIDIA GPU, NVIDIA driver, CUDA Toolkit, `nvcc`, and cuBLAS are required.
+- NVIDIA GPU and compatible driver
+- CUDA Toolkit with nvcc
+- cuBLAS
+- target architecture matching the GPU
 
 For a Tesla T4 (compute capability 7.5):
 
-```bash
-nvcc -O3 -arch=sm_75 -lcublas cuda_kernels/matmul_suite.cu -o matmul_bench
-./matmul_bench
-```
+~~~bash
+python -m benchmark.runner --arch sm_75 --size 4096
+~~~
 
-Change `sm_75` to match the target GPU architecture. The current source's compile-time configuration uses a fixed matrix size; different shapes should not be assumed to be validated automatically.
+Equivalent direct compile command:
 
-### Measurement caveats
+~~~bash
+mkdir -p build
+nvcc -O3 -lineinfo -arch=sm_75 -DN=4096 \
+  cuda_kernels/matmul_suite.cu -lcublas -o build/matmul_bench
+./build/matmul_bench
+~~~
 
-- Use warm-up iterations and repeated CUDA-event timings. Report the median and spread, along with the exact GPU, driver, CUDA/cuBLAS versions, matrix size, and data type.
-- K0–K3 use FP32 data. K4 uses FP16 inputs and accumulates in FP32. Do not present K4's comparison against an FP32 cuBLAS reference as an apples-to-apples efficiency result; compare each kernel with an appropriate reference at matching precision.
-- Verify the output against a trusted implementation and report numerical error before publishing performance claims.
-- Include data conversion and end-to-end costs separately when they are part of the real workload.
+The runner writes:
 
-**Benchmark results are intentionally not summarized here until the measurement and precision-comparison path has been reproduced.** Historical values in earlier versions of this README were not sufficiently consistent to publish as validated results. The next published table should link to raw run output and state the configuration and validation status.
+- results/benchmarks/latest.json — schema-validated measurements and metadata
+- results/benchmarks/latest.stdout.txt — complete executable output
+- results/benchmarks/latest.compile-stderr.txt — compiler diagnostics
+
+Select another target architecture and matrix size with --arch and --size.
+For example, an A100 run should use --arch sm_80 on an actual A100 machine.
+Only publish a result after the executable has compiled, completed validation,
+and run on that hardware.
+
+### Compare CUDA, CUTLASS, and Triton artifacts
+
+Once each backend has produced a validated JSON file:
+
+~~~bash
+python -m benchmark.compare \
+  results/benchmarks/cuda_t4.json \
+  results/benchmarks/cutlass_t4.json \
+  results/benchmarks/triton_t4.json \
+  --output results/comparison.csv
+~~~
+
+Compare only runs with matching GPU, shape, layout, precision, accumulation
+mode, warm-up count, and timing protocol. Preserve each raw JSON artifact.
+The comparison utility does not manufacture missing backend results.
+
+## CUTLASS backend
+
+The optional adapter is cutlass/gemm_fp32.cu.
+
+~~~bash
+git clone https://github.com/NVIDIA/cutlass.git third_party/cutlass
+mkdir -p build
+nvcc -O3 -std=c++17 -lineinfo -arch=sm_75 \
+  -Ithird_party/cutlass/include \
+  cutlass/gemm_fp32.cu -lcublas -o build/cutlass_gemm_fp32
+./build/cutlass_gemm_fp32
+~~~
+
+Record the CUTLASS Git commit and CUDA/compiler versions with every result.
+This adapter is experimental and has not been compiled or benchmarked as part
+of the current branch work.
+
+See cutlass/README.md for the comparison contract.
+
+## Triton backend
+
+Install a CUDA-compatible PyTorch build first, then install the optional Triton
+dependency:
+
+~~~bash
+python -m pip install -r requirements-optional-triton.txt
+~~~
+
+Run:
+
+~~~bash
+python triton/matmul.py --size 4096 --warmup 5 --iterations 20 \
+  --output results/benchmarks/triton_t4.json
+~~~
+
+The implementation compares its FP32 output against torch.matmul, records
+Frobenius-relative error, and uses CUDA events for timing. It does not create
+results without a CUDA-enabled environment.
+
+See triton/README.md for details.
 
 ## Nsight Compute profiling
 
-The profiling module can parse a CSV export from Nsight Compute and generate an analysis report.
+The script scripts/profile_ncu.sh preserves both a native Nsight report and
+its raw CSV export. Nsight Compute may replay kernels to collect counters;
+profiling duration is not the same as the application's CUDA-event runtime.
 
-### Capture a profile
+Example: profile only the register-tiled kernel on a Tesla T4:
 
-Compile the executable first, then run it under `ncu` on a system where Nsight Compute can access the NVIDIA driver and GPU:
+~~~bash
+bash scripts/profile_ncu.sh \
+  build/matmul_bench \
+  results/profiling \
+  matmul_register_tiled \
+  full
+~~~
 
-```bash
-ncu --metrics \
-sm__throughput.avg.pct_of_peak_sustained_elapsed,\
-sm__warps_active.avg.pct_of_peak_sustained_active,\
-l1tex__t_sector_hit_rate.pct,\
-lts__t_sector_hit_rate.pct,\
-smsp__warp_issue_stalled_mio_throttle_per_warp_active.pct,\
-smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct,\
-sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed \
---csv --page raw -o my_profile ./matmul_bench > ncu_raw.csv
-```
+The last argument selects an Nsight section set (basic, detailed, or
+full, depending on the installed Nsight Compute version). The full set can
+be substantially slower and collect many more counters.
 
-### Analyze the CSV
+To analyze the generated CSV:
 
-```bash
-python main.py --module nsight --nsight-csv ncu_raw.csv
-```
+~~~bash
+python main.py --module nsight \
+  --nsight-csv results/profiling/<capture-name>.csv
+~~~
 
-The parser focuses on signals such as SM throughput, active warps, cache-sector hit rates, memory-dependency stalls, issue throttling, and Tensor Core activity. Interpret metrics in context; no single counter proves a bottleneck by itself.
+The parser supports both detail-style rows (Metric Name/Metric Value) and
+raw CSV rows where metric names are columns. It tracks which metrics were
+actually collected; missing counters are shown as unavailable rather than as
+measured zero. Metric availability varies by architecture and Nsight version.
 
-> **Demo mode:** when no real `--nsight-csv` file is supplied, the `nsight` module uses demo data. Demo-derived charts are illustrative only. Label them as demo output and never describe their values as hardware measurements.
+You can open the native .ncu-rep report with the Nsight Compute GUI.
 
 ## Roofline analysis
 
-The roofline module combines hardware roof configurations and workload points to reason about whether a workload is likely compute-bound, memory-bound, or mixed. A defensible empirical roofline requires measured hardware ceilings and measured per-kernel FLOPs and memory traffic. If demo or specification-based values are used, they must be labelled accordingly.
-
-```bash
+~~~bash
 python main.py --module roofline
-```
+~~~
+
+Current roofline workloads are illustrative demo points and hardware ceilings
+are configured assumptions. An empirical roofline requires measured compute
+and memory-bandwidth ceilings plus per-kernel FLOP counts and measured DRAM
+bytes. Do not present the demo chart as a measured T4 roofline.
 
 ## LLM inference modeling
 
-The inference profiler is a **first-principles analytical model**, not a live inference-serving benchmark. It estimates factors such as:
+~~~bash
+python main.py --module llm --model llama_7b --gpu T4
+~~~
 
-- Model-weight and KV-cache memory requirements
-- Approximate prefill/decode behavior under selected assumptions
-- Whether a workload may be constrained by memory bandwidth or compute
-- Batch-size and GPU-configuration trade-offs
-- Estimated throughput and cost metrics
+This module estimates model-weight memory, KV-cache size, prefill/decode
+behavior, arithmetic intensity, throughput, and cost from explicit assumptions.
+It does not run an inference server and its tokens/s values are estimates.
 
-Run an example:
+## Report generation
 
-```bash
-python main.py --module llm --model llama_70b --gpu H100_SXM
-```
+~~~bash
+# Live benchmark is attempted; no fallback numbers are substituted.
+python main.py --module kernels --arch sm_75 --size 4096
 
-Estimates depend on assumptions such as precision, context length, batch size, and model FLOPs. They should not be presented as observed tokens-per-second measurements from a running model unless separately benchmarked on a real serving stack.
+# Generate report with no Nsight section unless a real CSV is provided.
+python main.py --module report --arch sm_75 --size 4096
 
-## Report outputs
+# Explicit synthetic Nsight demo (for layout/testing only).
+python main.py --module nsight --demo-data
+~~~
 
-The report generator exports the analysis into several formats:
+The report distinguishes measured benchmark artifacts, synthetic roofline
+examples, Nsight demo fixtures, real Nsight CSV data, and analytical LLM
+estimates.
 
-```bash
-python main.py --module report
-```
+## Repository structure
 
-Expected report artifacts include:
-
-- `report_output/gpu_research_report.md`
-- `report_output/gpu_research_report.html`
-- `report_output/benchmark_results.json`
-
-Generated files may reflect measured data, analytical estimates, or demo fixtures depending on the selected module and inputs. Preserve that provenance when sharing a report.
-
-## Repository layout
-
-```text
+~~~text
 gpu-performance-platform/
 ├── cuda_kernels/
 │   └── matmul_suite.cu
-├── llm_profiler/
-│   └── inference_profiler.py
+├── benchmark/
+│   ├── schema.py
+│   ├── runner.py
+│   └── compare.py
+├── cutlass/
+│   └── gemm_fp32.cu
+├── triton/
+│   └── matmul.py
 ├── profiling/
 │   └── nsight_profiler.py
 ├── roofline/
 │   └── roofline_model.py
+├── llm_profiler/
+│   └── inference_profiler.py
 ├── report_gen/
 │   └── report_generator.py
-├── report_output/
-├── main.py
-├── requirements.txt
-└── README.md
-```
-
-## Current limitations
-
-- The GEMM implementation is a learning and analysis suite, not a replacement for production libraries such as cuBLAS or CUTLASS.
-- The suite currently uses a fixed matrix-size configuration and should not be assumed to support all edge sizes and shapes without additional testing.
-- The K4 WMMA path uses mixed precision; results need a precision-matched reference and explicit accuracy reporting.
-- Nsight profiling requires a functioning NVIDIA driver and profiler environment. Virtualized environments may restrict hardware-counter access.
-- Demo profiler data and analytical LLM estimates are useful for exercising the analysis pipeline, but they are not empirical GPU benchmark results.
-- Performance can change substantially with GPU architecture, clocks, memory state, compiler/toolkit, and launch configuration.
+├── scripts/
+│   └── profile_ncu.sh
+├── tests/
+└── main.py
+~~~
 
 ## Roadmap
 
-- [ ] Publish reproducible GEMM results with raw timing logs and precision-matched correctness checks.
-- [ ] Validate non-multiple dimensions and document kernel boundary behavior.
-- [ ] Attach real Nsight Compute captures and tie optimizations to observed counters.
-- [ ] Add a second custom CUDA workload and compare correctness and latency against a trusted reference.
-- [ ] Separate live-measurement output from demo and analytical output in generated reports.
+- [x] Keep CUDA kernels and analysis components in one repository.
+- [x] Add correctness validation before CUDA timing.
+- [x] Emit a versioned machine-readable CUDA benchmark artifact.
+- [x] Add a strict benchmark schema and CPU-testable parser/comparison tests.
+- [x] Add experimental CUTLASS FP32 and Triton FP32 adapters.
+- [x] Add Nsight native-report and CSV capture workflow.
+- [ ] Compile and run the updated CUDA suite on a Tesla T4.
+- [ ] Run Compute Sanitizer on the updated CUDA binary.
+- [ ] Capture real Nsight reports for K0–K4 and analyze observed bottlenecks.
+- [ ] Compile/run CUTLASS and Triton on the same T4 workload.
+- [ ] Repeat on A100/H100 and compare architecture behavior.
+- [ ] Add empirical roofline calibration and measured DRAM traffic.
 
 ## License
 
-This repository is distributed under the MIT License. See [LICENSE](LICENSE) if present in the repository.
-
----
-
-**Author:** [Lohit Reddy](https://github.com/lohit112) · [GitHub profile](https://github.com/lohit112)
+MIT — see LICENSE.
