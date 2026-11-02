@@ -2,6 +2,7 @@
 from __future__ import annotations
 import argparse
 import csv
+import json
 from pathlib import Path
 from typing import Any
 from benchmark.schema import load_benchmark
@@ -19,6 +20,13 @@ def collect_rows(paths: list[str | Path]) -> list[dict[str, Any]]:
                 "gpu": meta.get("gpu_name", "unknown"),
                 "compute_capability": meta.get("compute_capability", "unknown"),
                 "matrix_size": meta["matrix_size"],
+                "shape": json.dumps(meta.get("shape") or {
+                    "M": meta["matrix_size"], "N": meta["matrix_size"],
+                    "K": meta["matrix_size"],
+                }, sort_keys=True),
+                "warmup_iterations": meta["warmup_iterations"],
+                "timed_iterations": meta["timed_iterations"],
+                "reference_name": data["reference"].get("name", "unknown"),
                 "kernel_id": item["kernel_id"],
                 "kernel": item["name"],
                 "input_precision": item["input_precision"],
