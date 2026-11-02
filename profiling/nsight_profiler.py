@@ -153,6 +153,8 @@ class NsightReport:
                 'stall_short_scoreboard',
             'l1tex__data_pipe_lsu_wavefronts_mem_shared_bank_conflict.sum':
                 'shmem_bank_conflicts',
+            'launch__registers_per_thread':
+                'registers_per_thread',
         }
 
         try:
@@ -192,7 +194,10 @@ class NsightReport:
                         try:
                             val = float(metric_val)
                             field_name = METRIC_MAP[name]
-                            setattr(kernels[kernel_name], field_name, val)
+                            if field_name == "registers_per_thread":
+                                setattr(kernels[kernel_name], field_name, int(round(val)))
+                            else:
+                                setattr(kernels[kernel_name], field_name, val)
                             if field_name not in kernels[kernel_name].available_metrics:
                                 kernels[kernel_name].available_metrics.append(field_name)
                         except (ValueError, TypeError):
@@ -306,13 +311,30 @@ class NsightReport:
         def observed(field_name: str) -> bool:
             return not kernel.available_metrics or field_name in kernel.available_metrics
 
-        # Memory-bandwidth bound: high stall_long_scoreboard, high DRAM throughput
+        # Long-scoreboard stalls indicate memory dependencies, but do not alone
+        # prove DRAM bandwidth saturation. Require a DRAM counter for that claim.
         if observed('stall_long_scoreboard') and kernel.stall_long_scoreboard > 40:
-            recs.append(
-                f"Memory bound: {kernel.stall_long_scoreboard:.0f}% warp cycles stalled "
-                f"waiting for L2/HBM. Fix: increase cache hit rate with tiling, "
-                f"or use prefetching (__ldg() for read-only data)."
-            )
+            if observed('dram_throughput_pct') and kernel.dram_throughput_pct >= 70:
+                recs.append(
+                    f"Likely DRAM-bandwidth constrained: {kernel.stall_long_scoreboard:.0f}% "
+                    f"long-scoreboard stalls and {kernel.dram_throughput_pct:.0f}% of peak "
+                    f"DRAM throughput. Investigate reuse, coalescing, cache behavior, and "
+                    f"whether tiling can reduce off-chip traffic."
+                )
+            elif observed('dram_throughput_pct'):
+                recs.append(
+                    f"Memory-latency/dependency pressure: {kernel.stall_long_scoreboard:.0f}% "
+                    f"long-scoreboard stalls, while DRAM throughput is only "
+                    f"{kernel.dram_throughput_pct:.0f}% of peak. Inspect cache misses, "
+                    f"access locality, and available parallelism before calling this "
+                    f"bandwidth-saturated."
+                )
+            else:
+                recs.append(
+                    f"High memory-dependency stalls: {kernel.stall_long_scoreboard:.0f}% "
+                    f"long-scoreboard stalls. DRAM throughput was not collected, so "
+                    f"bandwidth saturation cannot be concluded from this capture."
+                )
 
         # Low compute utilization
         if observed('sm_throughput_pct') and kernel.sm_throughput_pct < 50:
@@ -357,12 +379,14 @@ class NsightReport:
                 f"l1tex__t_sectors_pipe_lsu_mem_local_op_ld.sum"
             )
 
-        # Tensor cores not used when they should be
+        # A low Tensor Core counter is expected for an FP32 SIMT kernel.
+        # Treat it as a separate mixed-precision experiment, not a diagnosed bug.
         if observed('tensor_core_pct') and kernel.tensor_core_pct < 10 and 'wmma' not in kernel.kernel_name.lower():
             recs.append(
-                f"🟢 OPPORTUNITY: Tensor core utilization is {kernel.tensor_core_pct:.0f}%. "
-                f"Convert this kernel to use WMMA (Volta+) or PTX-level tensor core ops "
-                f"for 4-8× more TFLOPS on FP16 workloads."
+                f"Tensor Core pipeline activity is {kernel.tensor_core_pct:.0f}%. "
+                f"This is expected for a conventional FP32 SIMT kernel. A separate "
+                f"FP16/BF16/TF32 Tensor Core variant may be worth testing if its "
+                f"precision and numerical-error budget are acceptable."
             )
 
         # Math throttle stalls — this is actually GOOD (compute-bound)
@@ -375,7 +399,14 @@ class NsightReport:
             )
 
         if not recs:
-            recs.append("No major bottlenecks detected. Kernel appears reasonably well-optimized.")
+            if kernel.available_metrics:
+                recs.append(
+                    "No configured recommendation threshold was triggered by the "
+                    f"{len(kernel.available_metrics)} counters collected. This is not "
+                    "proof that the kernel has no bottlenecks."
+                )
+            else:
+                recs.append("Synthetic demo fixture: no configured recommendation threshold was triggered.")
 
         return recs
 
@@ -572,6 +603,7 @@ def run_ncu_profiling(
             "l1tex__t_sector_hit_rate.pct",
             "lts__t_sector_hit_rate.pct",
             "dram__throughput.avg.pct_of_peak_sustained_elapsed",
+            "launch__registers_per_thread",
             "smsp__warp_issue_stalled_mio_throttle_per_warp_active.pct",
             "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct",
             "smsp__warp_issue_stalled_barrier_per_warp_active.pct",
