@@ -39,6 +39,7 @@ class ReportGenerator:
         self.llm_profiles = []
         self.kernel_benchmarks = []
         self.benchmark_artifact: dict[str, Any] | None = None
+        self.empirical_roofline_rows: list[dict[str, Any]] = []
 
     def run_roofline_analysis(self) -> None:
         print("[1/4] Generating illustrative roofline analysis...")
@@ -81,6 +82,69 @@ class ReportGenerator:
             self.benchmark_artifact = None
             self.kernel_benchmarks = []
             print("  No benchmark JSON found; no synthetic GFLOPS values substituted.")
+
+    def run_empirical_roofline_analysis(self) -> None:
+        """Join real NCU DRAM bytes with the matching validated GEMM benchmark rows."""
+        self.empirical_roofline_rows = []
+        if not self.nsight_report or not self.benchmark_artifact:
+            print("  Empirical arithmetic intensity unavailable: both a real NCU CSV "
+                  "and a validated CUDA benchmark artifact are required.")
+            return
+
+        meta = self.benchmark_artifact["metadata"]
+        shape = meta.get("shape") or {
+            "M": meta["matrix_size"], "N": meta["matrix_size"], "K": meta["matrix_size"]
+        }
+        m, n, k = shape["M"], shape["N"], shape["K"]
+        gemm_flops = 2 * m * n * k
+
+        kernel_symbols = {
+            "K0": "matmul_naive",
+            "K1": "matmul_tiled_shmem",
+            "K2": "matmul_register_tiled",
+            "K3": "matmul_vectorized",
+            "K4": "matmul_wmma_tensor_core",
+        }
+        for benchmark_row in self.kernel_benchmarks:
+            symbol = kernel_symbols.get(benchmark_row["kernel_id"])
+            if not symbol:
+                continue
+            ncu_row = next(
+                (item for item in self.nsight_report.kernels
+                 if symbol in item.kernel_name.lower()),
+                None,
+            )
+            if ncu_row is None:
+                continue
+            required = {"dram_bytes_read", "dram_bytes_write"}
+            if not required.issubset(set(ncu_row.available_metrics)):
+                continue
+
+            read_bytes = ncu_row.dram_bytes_read
+            write_bytes = ncu_row.dram_bytes_write
+            total_bytes = read_bytes + write_bytes
+            if total_bytes <= 0:
+                continue
+
+            self.empirical_roofline_rows.append({
+                "kernel_id": benchmark_row["kernel_id"],
+                "kernel": benchmark_row["name"],
+                "dram_bytes_read": read_bytes,
+                "dram_bytes_write": write_bytes,
+                "dram_bytes_total": total_bytes,
+                "gemm_flops": gemm_flops,
+                "arithmetic_intensity_flop_per_byte": gemm_flops / total_bytes,
+                "benchmark_latency_ms": benchmark_row["latency_ms"],
+                "benchmark_gflops": benchmark_row["gflops"],
+                "input_precision": benchmark_row["input_precision"],
+            })
+
+        if self.empirical_roofline_rows:
+            print("  Derived measured DRAM arithmetic intensity for "
+                  f"{len(self.empirical_roofline_rows)} GEMM kernels.")
+        else:
+            print("  No matched kernels had both DRAM read and write counters; "
+                  "the report will not invent arithmetic-intensity values.")
 
     def generate_markdown(self, primary_gpu: str = "T4") -> str:
         lines = [
@@ -189,6 +253,36 @@ class ReportGenerator:
                 "scripts/profile_ncu.sh; no profiler metrics are inferred."
             )
 
+        if self.empirical_roofline_rows:
+            lines.extend([
+                "",
+                "### Measured GEMM DRAM traffic and arithmetic intensity",
+                "",
+                "| Kernel | DRAM read (MiB) | DRAM write (MiB) | Total DRAM (MiB) | Arithmetic intensity (FLOP/byte) | Benchmark GFLOP/s |",
+                "|---|---:|---:|---:|---:|---:|",
+            ])
+            for row in self.empirical_roofline_rows:
+                lines.append(
+                    f"| {row['kernel_id']} — {row['kernel']} | "
+                    f"{row['dram_bytes_read'] / (1024 ** 2):.2f} | "
+                    f"{row['dram_bytes_write'] / (1024 ** 2):.2f} | "
+                    f"{row['dram_bytes_total'] / (1024 ** 2):.2f} | "
+                    f"{row['arithmetic_intensity_flop_per_byte']:.3f} | "
+                    f"{row['benchmark_gflops']:.2f} |"
+                )
+            lines.extend([
+                "",
+                "Method: GEMM work is counted as 2×M×N×K FLOPs; DRAM read/write bytes "
+                "come from the matched Nsight Compute kernel counters. GFLOP/s and "
+                "latency come from the separate CUDA-event benchmark artifact. "
+                "The arithmetic-intensity column is therefore derived from measured "
+                "DRAM traffic, while throughput retains its benchmark-run provenance.",
+                "",
+                "Caveat: DRAM counters are observed at the device memory controllers and "
+                "can include traffic from other GPU clients. Profile on an otherwise "
+                "idle GPU and inspect the native .ncu-rep before drawing conclusions.",
+            ])
+
         lines.extend(["", "## 4. LLM inference modeling", ""])
         lines.append(
             "The following values are first-principles analytical estimates, not measurements "
@@ -226,6 +320,7 @@ class ReportGenerator:
         self.run_nsight_analysis()
         self.run_llm_profiler(gpu=primary_gpu)
         self.run_kernel_benchmarks()
+        self.run_empirical_roofline_analysis()
 
         markdown = self.generate_markdown(primary_gpu)
         md_path = self.output_dir / "gpu_research_report.md"
@@ -257,6 +352,7 @@ class ReportGenerator:
                 else "real_csv" if self.nsight_report else "unavailable"
             ),
             "llm_provenance": "analytical_estimate",
+            "empirical_roofline_rows": self.empirical_roofline_rows,
             "llm_profiles": [
                 {
                     "batch": p.batch_size,
