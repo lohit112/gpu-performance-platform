@@ -160,6 +160,17 @@ Compare only runs with matching GPU, shape, layout, precision, accumulation
 mode, warm-up count, and timing protocol. Preserve each raw JSON artifact.
 The comparison utility does not manufacture missing backend results.
 
+To orchestrate all backends available in the current GPU environment:
+
+~~~bash
+bash scripts/run_full_benchmark.sh sm_75 4096
+~~~
+
+The handwritten CUDA suite is required. CUTLASS runs only when its source is
+checked out under third_party/cutlass; Triton runs only when CUDA-enabled
+PyTorch and Triton are installed. Optional backends are reported as skipped
+when unavailable, never replaced with synthetic results.
+
 ## CUTLASS backend
 
 The optional adapter is cutlass/gemm_fp32.cu.
