@@ -142,7 +142,7 @@ class NsightReport:
                 'l1_hit_rate_pct',
             'lts__t_sector_hit_rate.pct':
                 'l2_hit_rate_pct',
-            'l1tex__t_bytes.avg.pct_of_peak_sustained_elapsed':
+            'dram__throughput.avg.pct_of_peak_sustained_elapsed':
                 'dram_throughput_pct',
             'smsp__warp_issue_stalled_mio_throttle_per_warp_active.pct':
                 'stall_mio_throttle',
@@ -171,23 +171,45 @@ class NsightReport:
                     if kernel_name not in kernels:
                         kernels[kernel_name] = NsightMetrics(kernel_name=kernel_name)
 
+                    # Nsight CSV has two common layouts:
+                    #   (1) section/detail CSV: one row per metric, Metric Name/Value columns
+                    #   (2) raw page CSV: one row per kernel, metric names are CSV columns
                     metric_name = row.get('Metric Name', '').strip()
-                    metric_val  = row.get('Metric Value', '0').strip()
+                    if metric_name:
+                        candidates = [(metric_name, row.get('Metric Value', ''))]
+                    else:
+                        candidates = [(name, row.get(name, '')) for name in METRIC_MAP]
 
-                    if metric_name in METRIC_MAP:
+                    for name, raw_value in candidates:
+                        if name not in METRIC_MAP or raw_value is None:
+                            continue
+                        metric_val = str(raw_value).strip().replace(',', '')
+                        if not metric_val or metric_val in {'-', 'N/A', 'n/a'}:
+                            continue
                         try:
-                            val = float(metric_val.replace(',', ''))
-                            setattr(kernels[kernel_name], METRIC_MAP[metric_name], val)
-                        except ValueError:
-                            pass
+                            val = float(metric_val)
+                            setattr(kernels[kernel_name], METRIC_MAP[name], val)
+                        except (ValueError, TypeError):
+                            continue
 
         except FileNotFoundError:
             raise FileNotFoundError(f"Nsight Compute CSV not found: {csv_path}")
 
         if not kernels:
             raise ValueError(
-                f"No kernel metrics were parsed from {csv_path}. "
-                "Check that this is an ncu --csv --page raw export."
+                f"No kernel rows were parsed from {csv_path}. "
+                "Check that this is an ncu --csv export."
+            )
+        mapped_count = 0
+        for metric in kernels.values():
+            mapped_count += sum(
+                getattr(metric, field_name) != 0
+                for field_name in set(METRIC_MAP.values())
+            )
+        if mapped_count == 0:
+            raise ValueError(
+                f"Kernel rows were found in {csv_path}, but none of the configured "
+                "metric columns matched. Check metric names against this GPU/Nsight version."
             )
 
         return cls(
