@@ -43,9 +43,10 @@ matplotlib.rcParams['font.family'] = 'DejaVu Sans'
 @dataclass
 class HardwareRoof:
     """
-    Measured hardware ceilings for one GPU.
-    These should come from calibration kernels, not spec sheets.
-    We include spec sheet values as an upper bound for comparison.
+    Configured hardware ceiling assumptions used by the roofline model.
+
+    These values are illustrative unless they are replaced with measurements
+    from calibration kernels on the exact GPU under test.
     """
     gpu_name:               str
     # Peak compute (measured, not spec) in GFLOPS
@@ -69,16 +70,21 @@ class HardwareRoof:
                 self.ridge_point_tensor = (self.peak_tensor_fp16_gflops * 1e9) / (self.peak_bandwidth_gbps * 1e9)
 
     @classmethod
-    def t4_measured(cls) -> 'HardwareRoof':
-        """T4 GPU — measured values from our benchmarks (not spec sheet)."""
+    def t4_spec(cls) -> 'HardwareRoof':
+        """Tesla T4 illustrative ceiling configuration; not measured roofline data."""
         return cls(
-            gpu_name='Tesla T4',
+            gpu_name='Tesla T4 (configured ceiling)',
             peak_fp32_gflops=7_200,
             peak_fp16_gflops=58_000,
             peak_bandwidth_gbps=280,
             peak_fp8_gflops=116_000,
             peak_tensor_fp16_gflops=58_000,
         )
+
+    @classmethod
+    def t4_measured(cls) -> 'HardwareRoof':
+        """Deprecated compatibility alias; returns configured ceilings, not measurements."""
+        return cls.t4_spec()
 
     @classmethod
     def a100_spec(cls) -> 'HardwareRoof':
@@ -259,44 +265,25 @@ class RooflineModel:
 
 def build_demo_workloads() -> list[KernelPoint]:
     """
-    Representative workloads across the roofline spectrum.
+    Synthetic points used only to demonstrate roofline plotting and classification.
 
-    All values are physically consistent with T4 hardware ceilings
-    (achieved_gflops <= min(OI * peak_bandwidth_gbps, peak_compute_gflops)).
-
-    T4 reference: FP32 peak = 7,200 GFLOPS, FP16 TC peak = 58,000 GFLOPS,
-    HBM bandwidth = 280 GB/s.  Ridge points: FP32 = 25.7, FP16 TC = 207 FLOP/B.
-
-    NOTE — naive GEMM OI correction:
-      Textbook OI for NxN GEMM = 2N^3 FLOPs / (2N^3 * 4 bytes) = 0.25 FLOP/Byte.
-      The old demo used OI=1.0 and achieved=520 GFLOPS, both of which exceeded the
-      BW ceiling (280 GFLOPS), producing a physically impossible negative gap.
-      Corrected values match ~65 GFLOPS observed on T4 for naive N=4096 GEMM.
-
-    WMMA OI correction:
-      OI=128 < ridge_tensor=207, so WMMA is memory-bound on the TC roof.
-      Ceiling = 128 * 280 = 35,840 GFLOPS. Old demo used 52,000 (above ceiling).
-      Corrected to 33,000 GFLOPS (~92% of BW ceiling, realistic for WMMA).
+    These values are NOT measured by the current CUDA executable and must never
+    be presented as empirical K0-K4 benchmark results. Replace them with points
+    derived from a validated benchmark artifact and measured DRAM bytes for an
+    empirical roofline study.
     """
     return [
-        # GEMM family — memory→compute transition as OI rises
-        KernelPoint("matmul_naive K0",       achieved_gflops=65,     arithmetic_intensity=0.25, precision='fp32', category='GEMM'),
-        KernelPoint("matmul_shmem K1",       achieved_gflops=5_800,  arithmetic_intensity=32.0, precision='fp32', category='GEMM'),
-        KernelPoint("matmul_reg K2",         achieved_gflops=6_900,  arithmetic_intensity=64.0, precision='fp32', category='GEMM'),
-        KernelPoint("matmul_wmma K4",        achieved_gflops=33_000, arithmetic_intensity=128,  precision='fp16', category='GEMM'),
-
-        # LLM workloads
-        KernelPoint("attention_prefill",     achieved_gflops=6_200,  arithmetic_intensity=85.0, precision='fp16', category='Attention'),
-        KernelPoint("attention_decode_bs1",  achieved_gflops=105,    arithmetic_intensity=0.4,  precision='fp16', category='Attention'),
-        KernelPoint("attention_decode_bs16", achieved_gflops=1_600,  arithmetic_intensity=6.5,  precision='fp16', category='Attention'),
-
-        # Bandwidth-bound ops
-        KernelPoint("elementwise_ReLU",      achieved_gflops=62,     arithmetic_intensity=0.25, precision='fp32', category='BW'),
-        KernelPoint("layer_norm",            achieved_gflops=125,    arithmetic_intensity=0.5,  precision='fp32', category='BW'),
-        KernelPoint("embedding_lookup",      achieved_gflops=22,     arithmetic_intensity=0.1,  precision='fp32', category='BW'),
-
-        # Conv (between BW and compute)
-        KernelPoint("conv2d_3x3",            achieved_gflops=4_100,  arithmetic_intensity=15.0, precision='fp32', category='Conv'),
+        KernelPoint("DEMO K0 naive GEMM", achieved_gflops=65, arithmetic_intensity=0.25, precision="fp32", category="GEMM"),
+        KernelPoint("DEMO K1 shared-memory GEMM", achieved_gflops=5_800, arithmetic_intensity=32.0, precision="fp32", category="GEMM"),
+        KernelPoint("DEMO K2 register-tiled GEMM", achieved_gflops=6_900, arithmetic_intensity=64.0, precision="fp32", category="GEMM"),
+        KernelPoint("DEMO K4 WMMA GEMM", achieved_gflops=33_000, arithmetic_intensity=128.0, precision="fp16", category="GEMM"),
+        KernelPoint("DEMO attention prefill", achieved_gflops=6_200, arithmetic_intensity=85.0, precision="fp16", category="Attention"),
+        KernelPoint("DEMO attention decode batch 1", achieved_gflops=105, arithmetic_intensity=0.4, precision="fp16", category="Attention"),
+        KernelPoint("DEMO attention decode batch 16", achieved_gflops=1_600, arithmetic_intensity=6.5, precision="fp16", category="Attention"),
+        KernelPoint("DEMO ReLU", achieved_gflops=62, arithmetic_intensity=0.25, precision="fp32", category="BW"),
+        KernelPoint("DEMO layer normalization", achieved_gflops=125, arithmetic_intensity=0.5, precision="fp32", category="BW"),
+        KernelPoint("DEMO embedding lookup", achieved_gflops=22, arithmetic_intensity=0.1, precision="fp32", category="BW"),
+        KernelPoint("DEMO convolution 3x3", achieved_gflops=4_100, arithmetic_intensity=15.0, precision="fp32", category="Conv"),
     ]
 
 
