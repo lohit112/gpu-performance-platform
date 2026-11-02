@@ -1,4 +1,4 @@
-from profiling.nsight_profiler import NsightReport
+from profiling.nsight_profiler import NsightMetrics, NsightReport
 
 
 def test_detail_csv_layout_parses_named_metric_rows(tmp_path):
@@ -69,3 +69,40 @@ def test_zero_valued_collected_counter_is_still_available(tmp_path):
     metric = report.kernels[0]
     assert metric.sm_throughput_pct == 0.0
     assert "sm_throughput_pct" in metric.available_metrics
+
+
+def test_registers_per_thread_metric_is_parsed(tmp_path):
+    csv_path = tmp_path / "registers.csv"
+    csv_path.write_text(
+        "Kernel Name,launch__registers_per_thread\n"
+        "matmul_register_tiled,64\n",
+        encoding="utf-8",
+    )
+    report = NsightReport.from_csv(str(csv_path))
+    kernel = report.kernels[0]
+    assert kernel.registers_per_thread == 64
+    assert "registers_per_thread" in kernel.available_metrics
+
+
+def test_high_long_scoreboard_without_high_dram_is_not_called_bandwidth_bound():
+    kernel = NsightMetrics(
+        kernel_name="matmul_naive",
+        stall_long_scoreboard=75.0,
+        dram_throughput_pct=25.0,
+        available_metrics=["stall_long_scoreboard", "dram_throughput_pct"],
+    )
+    report = NsightReport(gpu_name="Test GPU", cuda_version="unknown", kernels=[kernel])
+    recs = report.generate_recommendations(kernel)
+    assert any("Memory-latency/dependency pressure" in item for item in recs)
+    assert not any("DRAM-bandwidth constrained" in item for item in recs)
+
+
+def test_high_long_scoreboard_without_dram_counter_states_uncertainty():
+    kernel = NsightMetrics(
+        kernel_name="matmul_naive",
+        stall_long_scoreboard=75.0,
+        available_metrics=["stall_long_scoreboard"],
+    )
+    report = NsightReport(gpu_name="Test GPU", cuda_version="unknown", kernels=[kernel])
+    recs = report.generate_recommendations(kernel)
+    assert any("DRAM throughput was not collected" in item for item in recs)
