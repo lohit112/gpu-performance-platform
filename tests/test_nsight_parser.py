@@ -147,6 +147,7 @@ def test_dram_byte_metric_with_unknown_unit_is_not_reported_as_bytes(tmp_path):
     csv_path = tmp_path / "dram_unknown_unit.csv"
     csv_path.write_text(
         "Kernel Name,Metric Name,Metric Unit,Metric Value\n"
+        "matmul_naive,sm__throughput.avg.pct_of_peak_sustained_elapsed,%,10.0\n"
         "matmul_naive,dram__bytes_read.sum,GB/s,12.5\n",
         encoding="utf-8",
     )
