@@ -150,6 +150,12 @@ class ReportGenerator:
                 )
 
         lines.extend(["", "## 3. Nsight Compute", ""])
+
+        def format_ncu_metric(metric, field_name: str) -> str:
+            if metric.available_metrics and field_name not in metric.available_metrics:
+                return "n/a (not collected)"
+            return f"{getattr(metric, field_name):.2f}"
+
         if self.nsight_report:
             if "demo" in self.nsight_report.gpu_name.lower():
                 lines.append("**Synthetic demo data — not a hardware profile.**")
@@ -162,9 +168,11 @@ class ReportGenerator:
             ])
             for metric in self.nsight_report.kernels:
                 lines.append(
-                    f"| {metric.kernel_name} | {metric.sm_throughput_pct:.2f} | "
-                    f"{metric.achieved_occupancy_pct:.2f} | {metric.l1_hit_rate_pct:.2f} | "
-                    f"{metric.l2_hit_rate_pct:.2f} | {metric.tensor_core_pct:.2f} |"
+                    f"| {metric.kernel_name} | {format_ncu_metric(metric, 'sm_throughput_pct')} | "
+                    f"{format_ncu_metric(metric, 'achieved_occupancy_pct')} | "
+                    f"{format_ncu_metric(metric, 'l1_hit_rate_pct')} | "
+                    f"{format_ncu_metric(metric, 'l2_hit_rate_pct')} | "
+                    f"{format_ncu_metric(metric, 'tensor_core_pct')} |"
                 )
         else:
             lines.append(
