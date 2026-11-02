@@ -106,6 +106,7 @@ class ReportGenerator:
                 f"- Matrix size: {meta.get('matrix_size', 'not recorded')}",
                 f"- Shape: {meta.get('shape', {'M': meta.get('matrix_size'), 'N': meta.get('matrix_size'), 'K': meta.get('matrix_size')})}",
                 f"- Layout: {meta.get('layout', 'not recorded')}",
+                f"- FP32-to-FP16 input conversion: {meta.get('fp16_input_conversion_ms', 'not applicable')} ms",
                 f"- Captured (UTC): {meta.get('captured_at_utc', 'timestamp not recorded')}",
                 f"- Warm-up iterations: {meta.get('warmup_iterations', 'not recorded')}",
                 f"- Timed iterations: {meta.get('timed_iterations', 'not recorded')}",
