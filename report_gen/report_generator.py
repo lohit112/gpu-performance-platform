@@ -104,13 +104,18 @@ class ReportGenerator:
                 f"- GPU: {meta.get('gpu_name', 'unknown')} "
                 f"(compute capability {meta.get('compute_capability', 'unknown')})",
                 f"- Matrix size: {meta.get('matrix_size', 'not recorded')}",
+                f"- Shape: {meta.get('shape', {'M': meta.get('matrix_size'), 'N': meta.get('matrix_size'), 'K': meta.get('matrix_size')})}",
+                f"- Layout: {meta.get('layout', 'not recorded')}",
+                f"- Captured (UTC): {meta.get('captured_at_utc', 'timestamp not recorded')}",
                 f"- Warm-up iterations: {meta.get('warmup_iterations', 'not recorded')}",
                 f"- Timed iterations: {meta.get('timed_iterations', 'not recorded')}",
-                f"- Reference: {ref.get('name', 'unknown')} — "
-                f"{ref['gflops']:.2f} GFLOPS at {ref['latency_ms']:.4f} ms",
+                f"- Reference: {ref.get('name', 'unknown')} "
+                f"({ref['input_precision']} input / {ref['accumulation_precision']} accumulate / "
+                f"{ref['output_precision']} output) — {ref['gflops']:.2f} GFLOPS "
+                f"at {ref['latency_ms']:.4f} ms",
                 "",
-                "| Kernel | Input | Accumulator | Latency (ms) | GFLOPS | % reference | Correctness |",
-                "|---|---|---|---:|---:|---:|---|",
+                "| Kernel | Input | Accumulator | Output | Latency (ms) | GFLOPS | % reference | Correctness |",
+                "|---|---|---|---|---:|---:|---:|---|",
             ])
             for row in self.kernel_benchmarks:
                 validation = row.get("validation") or {}
@@ -120,7 +125,8 @@ class ReportGenerator:
                 pct_text = f"{pct:.2f}%" if isinstance(pct, (int, float)) else "n/a"
                 lines.append(
                     f"| {row['name']} | {row['input_precision']} | "
-                    f"{row['accumulation_precision']} | {row['latency_ms']:.4f} | "
+                    f"{row['accumulation_precision']} | {row['output_precision']} | "
+                    f"{row['latency_ms']:.4f} | "
                     f"{row['gflops']:.2f} | {pct_text} | {state} |"
                 )
             lines.extend([
