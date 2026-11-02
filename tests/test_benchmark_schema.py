@@ -64,3 +64,36 @@ def test_cuda_runner_refuses_reference_fallback_when_nvcc_missing(tmp_path, monk
 
     with pytest.raises(RuntimeError, match="No synthetic/reference table"):
         runner.run_cuda_benchmark(tmp_path, arch="sm_75", size=64)
+
+
+def test_non_finite_benchmark_value_is_rejected():
+    data = payload()
+    data["results"][0]["gflops"] = float("nan")
+    with pytest.raises(BenchmarkSchemaError, match="finite number"):
+        validate_benchmark(data)
+
+
+def test_boolean_latency_is_not_accepted_as_number():
+    data = payload()
+    data["results"][0]["latency_ms"] = True
+    with pytest.raises(BenchmarkSchemaError, match="finite number"):
+        validate_benchmark(data)
+
+
+def test_boolean_schema_version_is_rejected():
+    data = payload()
+    data["schema_version"] = True
+    with pytest.raises(BenchmarkSchemaError):
+        validate_benchmark(data)
+
+
+def test_cuda_runner_rejects_unaligned_matrix_size_before_nvcc(tmp_path, monkeypatch):
+    from benchmark import runner
+
+    source_dir = tmp_path / "cuda_kernels"
+    source_dir.mkdir()
+    (source_dir / "matmul_suite.cu").write_text("int main() { return 0; }", encoding="utf-8")
+    monkeypatch.setattr(runner.shutil, "which", lambda _: None)
+
+    with pytest.raises(ValueError, match="divisible by 16"):
+        runner.run_cuda_benchmark(tmp_path, arch="sm_75", size=65)
