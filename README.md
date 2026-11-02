@@ -167,7 +167,7 @@ The comparison utility does not manufacture missing backend results.
 To orchestrate all backends available in the current GPU environment:
 
 ~~~bash
-bash scripts/run_full_benchmark.sh sm_75 4096
+bash scripts/run_full_benchmark.sh sm_75 4096 5 20
 ~~~
 
 The handwritten CUDA suite is required. CUTLASS runs only when its source is
