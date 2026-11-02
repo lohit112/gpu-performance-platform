@@ -34,6 +34,9 @@ def _write_comparison_fixture(path, *, gpu="Test GPU", input_precision="FP32"):
             "layout": "row_major",
             "warmup_iterations": 2,
             "timed_iterations": 10,
+            "compiler": "test-compiler",
+            "compiler_version": "1.2.3",
+            "source_sha256": "abc123",
         },
         "reference": {
             "name": "reference",
@@ -83,3 +86,12 @@ def test_compare_separates_mixed_precision_kernel_groups(tmp_path):
 
     assert rows[0]["run_compatibility"] == "MATCHED"
     assert rows[0]["comparison_group"] != rows[1]["comparison_group"]
+
+
+def test_comparison_csv_preserves_toolchain_metadata(tmp_path):
+    artifact = tmp_path / "toolchain.json"
+    _write_comparison_fixture(artifact)
+    rows = collect_rows([artifact])
+
+    assert '"compiler": "test-compiler"' in rows[0]["toolchain"]
+    assert '"source_sha256": "abc123"' in rows[0]["toolchain"]
