@@ -8,10 +8,10 @@ def payload():
         "schema_version": 1,
         "metadata": {"gpu_name": "Test GPU", "compute_capability": "7.5",
                      "matrix_size": 256, "warmup_iterations": 2, "timed_iterations": 5},
-        "reference": {"name": "cuBLAS", "latency_ms": 1.0, "gflops": 10.0},
+        "reference": {"name": "cuBLAS", "input_precision": "FP32", "accumulation_precision": "FP32", "output_precision": "FP32", "latency_ms": 1.0, "gflops": 10.0},
         "results": [{
             "kernel_id": "K0", "name": "Naive", "input_precision": "FP32",
-            "accumulation_precision": "FP32", "latency_ms": 2.0, "gflops": 5.0,
+            "accumulation_precision": "FP32", "output_precision": "FP32", "latency_ms": 2.0, "gflops": 5.0,
             "pct_of_cublas": 50.0,
             "validation": {"frobenius_relative_error": 1e-7,
                            "max_absolute_error": 1e-5, "passed": True},
