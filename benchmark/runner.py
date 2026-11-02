@@ -48,6 +48,7 @@ def run_cuda_benchmark(repo_root: str | Path, *, arch: str = "sm_75",
     build_dir.mkdir(parents=True, exist_ok=True)
     binary = build_dir / "matmul_bench"
     flags = ["-O3", "-lineinfo", f"-arch={arch}", f"-DN={size}", "-lcublas"]
+    compiler_version = _run([nvcc, "--version"], cwd=root, timeout=60)
     compiled = _run([nvcc, *flags[:-1], str(source), flags[-1], "-o", str(binary)],
                     cwd=root, timeout=timeout_seconds)
     executed = _run([str(binary)], cwd=root, timeout=timeout_seconds)
@@ -56,7 +57,9 @@ def run_cuda_benchmark(repo_root: str | Path, *, arch: str = "sm_75",
         "captured_at_utc": datetime.now(timezone.utc).isoformat(),
         "host_platform": platform.platform(),
         "compile_arch": arch,
+        "backend": "cuda",
         "compiler": "nvcc",
+        "compiler_version": compiler_version.stdout.strip(),
         "compiler_flags": flags,
         "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
     })
