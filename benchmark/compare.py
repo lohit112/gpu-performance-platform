@@ -80,6 +80,15 @@ def collect_rows(paths: list[str | Path]) -> list[dict[str, Any]]:
                 "matrix_size": meta["matrix_size"],
                 "shape": json.dumps(shape, sort_keys=True),
                 "layout": meta.get("layout", "unknown"),
+                "toolchain": json.dumps({
+                    key: meta[key] for key in (
+                        "compiler", "compiler_version", "compiler_flags",
+                        "compile_arch", "cuda_runtime_version", "cuda_driver_version",
+                        "torch_version", "torch_cuda_version", "tf32_enabled",
+                        "triton_version", "cutlass_revision", "cutlass_arch_tag",
+                        "source_sha256",
+                    ) if key in meta
+                }, sort_keys=True),
                 "warmup_iterations": meta["warmup_iterations"],
                 "timed_iterations": meta["timed_iterations"],
                 "fp16_input_conversion_ms": meta.get("fp16_input_conversion_ms", ""),
