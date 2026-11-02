@@ -468,13 +468,29 @@ int main() {
     __half *d_A_half, *d_B_half;
     CUDA_CHECK(cudaMalloc(&d_A_half, bytes_half));
     CUDA_CHECK(cudaMalloc(&d_B_half, bytes_half));
+    float fp16_input_conversion_ms = 0.0f;
     {
         int total = N * N;
         int threads = 256;
         int blocks  = (total + threads - 1) / threads;
+        cudaEvent_t convert_start, convert_stop;
+        CUDA_CHECK(cudaEventCreate(&convert_start));
+        CUDA_CHECK(cudaEventCreate(&convert_stop));
+
+        // One untimed warm-up, followed by a separately measured preprocessing pass.
         fp32_to_fp16<<<blocks, threads>>>(d_A, d_A_half, total);
         fp32_to_fp16<<<blocks, threads>>>(d_B, d_B_half, total);
         CUDA_CHECK(cudaDeviceSynchronize());
+
+        CUDA_CHECK(cudaEventRecord(convert_start));
+        fp32_to_fp16<<<blocks, threads>>>(d_A, d_A_half, total);
+        fp32_to_fp16<<<blocks, threads>>>(d_B, d_B_half, total);
+        CUDA_CHECK(cudaEventRecord(convert_stop));
+        CUDA_CHECK(cudaEventSynchronize(convert_stop));
+        CUDA_CHECK(cudaEventElapsedTime(&fp16_input_conversion_ms, convert_start, convert_stop));
+
+        CUDA_CHECK(cudaEventDestroy(convert_start));
+        CUDA_CHECK(cudaEventDestroy(convert_stop));
     }
 
     cudaEvent_t ev_start, ev_stop;
@@ -708,8 +724,8 @@ int main() {
     printf("    \"backend\": \"cuda\",\n");
     printf("    \"gpu_name\": \"%s\", \"compute_capability\": \"%d.%d\",\n",
            properties.name, properties.major, properties.minor);
-    printf("    \"cuda_runtime_version\": %d, \"cuda_driver_version\": %d,\n",
-           runtime_version, driver_version);
+    printf("    \"cuda_runtime_version\": %d, \"cuda_driver_version\": %d, \"fp16_input_conversion_ms\": %.6f,\n",
+           runtime_version, driver_version, fp16_input_conversion_ms);
     printf("    \"matrix_size\": %d, \"shape\": {\"M\": %d, \"N\": %d, \"K\": %d}, \"layout\": \"row_major\",\n",
            N, N, N, N);
     printf("    \"warmup_iterations\": %d, \"timed_iterations\": %d\n",
