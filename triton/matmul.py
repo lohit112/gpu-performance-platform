@@ -75,6 +75,9 @@ def run(M: int, N: int, K: int, warmup: int, iterations: int,
         raise RuntimeError("Triton benchmark requires a CUDA-enabled PyTorch environment.")
     if min(M, N, K, warmup, iterations) <= 0:
         raise ValueError("Matrix dimensions, warmups, and iterations must be positive.")
+    for label, block in (("block_m", block_m), ("block_n", block_n), ("block_k", block_k)):
+        if block <= 0 or block & (block - 1):
+            raise ValueError(f"{label} must be a positive power of two.")
 
     torch.manual_seed(42)
     # Keep the PyTorch reference in strict FP32 mode, matching Triton's ieee dot.
