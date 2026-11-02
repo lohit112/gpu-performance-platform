@@ -54,6 +54,12 @@ static_assert(N % 16 == 0,
 #define WMMA_M    16
 #define WMMA_N    16
 #define WMMA_K    16
+#ifndef WARMUP
+#define WARMUP    5
+#endif
+#ifndef TIMED
+#define TIMED     20
+#endif
 
 /* ─── Error checking ─────────────────────────────────────────────────────── */
 #define CUDA_CHECK(call) \
@@ -442,7 +448,6 @@ int main() {
     printf("  GEMM Benchmark Suite — N=%d, FP32 (K4: FP16 TC)\n", N);
     printf("========================================================\n\n");
 
-    const int WARMUP = 5, TIMED = 20;
     const double GFLOPS_REF = 2.0 * (double)N * N * N / 1e9;
 
     /* ── Host allocation ─────────────────────────────────────────────────── */
