@@ -17,6 +17,7 @@
 #include <cutlass/cutlass.h>
 #include <cutlass/gemm/device/gemm.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
