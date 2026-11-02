@@ -11,8 +11,8 @@ WHY THIS IS THE MOST IMPORTANT MODULE IN THE UPGRADE:
   2. Knowing HOW to interpret them (stall reasons, occupancy limiters)
   3. Knowing HOW to generate ACTIONABLE recommendations from the numbers
 
-  This module does all three. An NVIDIA engineer reading this will know you've
-  actually used Nsight, not just read about it.
+  The module provides a CSV adapter and rule-based analysis. Synthetic demo
+  fixtures are explicitly marked and are not substitutes for real profiling.
 
 HOW TO RUN:
   # Step 1: Profile your binary with ncu
@@ -104,6 +104,7 @@ class NsightMetrics:
 
     # ── Registers ────────────────────────────────────────────────────────────
     registers_per_thread:   int   = 0     # register usage (too high → low occ.)
+    available_metrics:      list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -188,7 +189,10 @@ class NsightReport:
                             continue
                         try:
                             val = float(metric_val)
-                            setattr(kernels[kernel_name], METRIC_MAP[name], val)
+                            field_name = METRIC_MAP[name]
+                            setattr(kernels[kernel_name], field_name, val)
+                            if field_name not in kernels[kernel_name].available_metrics:
+                                kernels[kernel_name].available_metrics.append(field_name)
                         except (ValueError, TypeError):
                             continue
 
@@ -300,8 +304,13 @@ class NsightReport:
         """
         recs = []
 
+        # In a real CSV, analyze only counters that were actually collected.
+        # Empty availability metadata is reserved for the built-in demo fixtures.
+        def observed(field_name: str) -> bool:
+            return not kernel.available_metrics or field_name in kernel.available_metrics
+
         # Memory-bandwidth bound: high stall_long_scoreboard, high DRAM throughput
-        if kernel.stall_long_scoreboard > 40:
+        if observed('stall_long_scoreboard') and kernel.stall_long_scoreboard > 40:
             recs.append(
                 f"Memory bound: {kernel.stall_long_scoreboard:.0f}% warp cycles stalled "
                 f"waiting for L2/HBM. Fix: increase cache hit rate with tiling, "
@@ -309,7 +318,7 @@ class NsightReport:
             )
 
         # Low compute utilization
-        if kernel.sm_throughput_pct < 50:
+        if observed('sm_throughput_pct') and kernel.sm_throughput_pct < 50:
             recs.append(
                 f"Low SM utilization: {kernel.sm_throughput_pct:.0f}% of peak. "
                 f"SM is underloaded. Fix: increase tile size, increase batch size, "
@@ -317,7 +326,7 @@ class NsightReport:
             )
 
         # Barrier stalls — too many __syncthreads() or load imbalance
-        if kernel.stall_barrier > 25:
+        if observed('stall_barrier') and kernel.stall_barrier > 25:
             recs.append(
                 f"Barrier stalls: {kernel.stall_barrier:.0f}% cycles at __syncthreads(). "
                 f"Consider double-buffering (async pipeline) to overlap sync with compute: "
@@ -325,7 +334,7 @@ class NsightReport:
             )
 
         # Low L1 hit rate
-        if kernel.l1_hit_rate_pct < 30:
+        if observed('l1_hit_rate_pct') and kernel.l1_hit_rate_pct < 30:
             recs.append(
                 f"Poor L1 cache reuse: {kernel.l1_hit_rate_pct:.0f}% hit rate. "
                 f"Access pattern is not cache-friendly. Fix: use shared memory for "
@@ -333,7 +342,7 @@ class NsightReport:
             )
 
         # Bank conflicts in shared memory
-        if kernel.shmem_bank_conflicts > 1000:
+        if observed('shmem_bank_conflicts') and kernel.shmem_bank_conflicts > 1000:
             recs.append(
                 f"Shared memory bank conflicts: {kernel.shmem_bank_conflicts:.0f} total. "
                 f"Fix: pad SHMEM arrays by +1 column: float sA[TILE][TILE+1]. "
@@ -341,7 +350,8 @@ class NsightReport:
             )
 
         # Low occupancy with high register pressure
-        if kernel.achieved_occupancy_pct < 40 and kernel.registers_per_thread > 48:
+        if (observed('achieved_occupancy_pct') and observed('registers_per_thread')
+                and kernel.achieved_occupancy_pct < 40 and kernel.registers_per_thread > 48):
             recs.append(
                 f"Low occupancy (register pressure): {kernel.registers_per_thread} "
                 f"regs/thread limits active warps to {kernel.achieved_occupancy_pct:.0f}%. "
@@ -351,7 +361,7 @@ class NsightReport:
             )
 
         # Tensor cores not used when they should be
-        if kernel.tensor_core_pct < 10 and 'wmma' not in kernel.kernel_name.lower():
+        if observed('tensor_core_pct') and kernel.tensor_core_pct < 10 and 'wmma' not in kernel.kernel_name.lower():
             recs.append(
                 f"🟢 OPPORTUNITY: Tensor core utilization is {kernel.tensor_core_pct:.0f}%. "
                 f"Convert this kernel to use WMMA (Volta+) or PTX-level tensor core ops "
@@ -359,7 +369,7 @@ class NsightReport:
             )
 
         # Math throttle stalls — this is actually GOOD (compute-bound)
-        if kernel.stall_math_throttle > 40:
+        if observed('stall_math_throttle') and kernel.stall_math_throttle > 40:
             recs.append(
                 f"Compute-bound: {kernel.stall_math_throttle:.0f}% cycles stalled on "
                 f"FP pipeline full. This is the GOOD kind of stall — math units are busy. "
