@@ -77,6 +77,8 @@ def run(M: int, N: int, K: int, warmup: int, iterations: int,
         raise ValueError("Matrix dimensions, warmups, and iterations must be positive.")
 
     torch.manual_seed(42)
+    # Keep the PyTorch reference in strict FP32 mode, matching Triton's ieee dot.
+    torch.backends.cuda.matmul.allow_tf32 = False
     device = torch.device("cuda")
     a = torch.randn((M, K), device=device, dtype=torch.float32)
     b = torch.randn((K, N), device=device, dtype=torch.float32)
