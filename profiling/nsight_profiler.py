@@ -16,14 +16,8 @@ WHY THIS IS THE MOST IMPORTANT MODULE IN THE UPGRADE:
 
 HOW TO RUN:
   # Step 1: Profile your binary with ncu
-  ncu --metrics sm__throughput.avg.pct_of_peak_sustained_elapsed,
-               sm__warps_active.avg.pct_of_peak_sustained_active,
-               l1tex__t_sector_hit_rate.pct,
-               lts__t_sector_hit_rate.pct,
-               smsp__warp_issue_stalled_mio_throttle_per_warp_active.pct,
-               smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct,
-               sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed
-       --csv --page raw -o my_profile ./matmul_bench > ncu_raw.csv
+  ncu --metrics <available-metric-list> -o matmul_profile.ncu-rep ./matmul_bench
+  ncu --import matmul_profile.ncu-rep --csv --page raw > ncu_raw.csv
 
   # Step 2: Pass the CSV to this module
   from profiling.nsight_profiler import NsightReport, visualize_nsight_report
@@ -556,18 +550,17 @@ def visualize_nsight_report(
 
 def run_ncu_profiling(
     binary_path: str,
-    output_csv:  str = "ncu_raw.csv",
-    metrics:     list[str] = None,
+    output_csv: str = "ncu_raw.csv",
+    metrics: list[str] | None = None,
 ) -> str:
     """
-    Programmatically invoke ncu and collect results.
-    
-    Requires: NVIDIA Nsight Compute CLI (ncu) in PATH.
-    Requires: Sufficient privileges (sudo or /proc/sys/kernel/perf_event_paranoid <= 2)
-    
-    On Colab: ncu is available when using A100/H100 instances with CUDA toolkit.
-    On local: install from https://developer.nvidia.com/nsight-compute
+    Capture an Nsight Compute report, then export a clean raw-page CSV.
+
+    The native .ncu-rep is kept beside the CSV for inspection in ncu-ui.
+    Metric availability depends on GPU architecture and installed NCU version.
     """
+    from pathlib import Path
+
     if metrics is None:
         metrics = [
             "sm__throughput.avg.pct_of_peak_sustained_elapsed",
@@ -575,44 +568,51 @@ def run_ncu_profiling(
             "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed",
             "l1tex__t_sector_hit_rate.pct",
             "lts__t_sector_hit_rate.pct",
+            "dram__throughput.avg.pct_of_peak_sustained_elapsed",
             "smsp__warp_issue_stalled_mio_throttle_per_warp_active.pct",
             "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct",
-            "smsp__warp_issue_stalled_not_selected_per_warp_active.pct",
             "smsp__warp_issue_stalled_barrier_per_warp_active.pct",
             "smsp__warp_issue_stalled_math_throttle_per_warp_active.pct",
         ]
 
-    cmd = [
+    output_path = Path(output_csv)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path = output_path.with_suffix(".ncu-rep")
+
+    command = [
         "ncu",
         "--metrics", ",".join(metrics),
-        "--csv",
-        "--page", "raw",
-        "-o", output_csv.replace('.csv', ''),  # ncu adds .ncu-rep
+        "-o", str(report_path),
         binary_path,
     ]
-
-    print(f"Running: {' '.join(cmd)}")
+    print(f"Running: {' '.join(command)}")
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-        if result.returncode != 0:
-            print(f"ncu stderr: {result.stderr}")
-            raise RuntimeError(f"ncu failed with code {result.returncode}")
+        profile = subprocess.run(command, capture_output=True, text=True, timeout=900)
+        if profile.returncode != 0:
+            raise RuntimeError(
+                f"ncu profiling failed ({profile.returncode}): "
+                f"{profile.stderr.strip() or profile.stdout.strip()}"
+            )
 
-        # ncu outputs CSV to stdout with --csv flag
-        with open(output_csv, 'w') as f:
-            f.write(result.stdout)
-
-        print(f"ncu results written to {output_csv}")
-        return output_csv
-
-    except FileNotFoundError:
-        raise RuntimeError(
-            "ncu not found in PATH. Install NVIDIA Nsight Compute:\n"
-            "  https://developer.nvidia.com/nsight-compute\n"
-            "On Colab: ncu is available on A100 instances with:\n"
-            "  !pip install nvcc4jupyter"
+        export = subprocess.run(
+            ["ncu", "--import", str(report_path), "--csv", "--page", "raw"],
+            capture_output=True, text=True, timeout=300,
         )
+        if export.returncode != 0:
+            raise RuntimeError(
+                f"ncu CSV export failed ({export.returncode}): "
+                f"{export.stderr.strip() or export.stdout.strip()}"
+            )
+        output_path.write_text(export.stdout, encoding="utf-8")
+        print(f"Native Nsight report: {report_path}")
+        print(f"Raw Nsight CSV: {output_path}")
+        return str(output_path)
 
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "ncu was not found in PATH. Install NVIDIA Nsight Compute and ensure "
+            "the CLI is available in the profiling environment."
+        ) from exc
 
 if __name__ == '__main__':
     # Demo: generate synthetic Nsight report and visualize
