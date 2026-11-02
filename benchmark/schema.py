@@ -46,6 +46,10 @@ def validate_benchmark(data: dict[str, Any]) -> None:
     name = reference.get("name")
     if not isinstance(name, str) or not name.strip():
         raise BenchmarkSchemaError("reference.name must be a non-empty string.")
+    for key in ("input_precision", "accumulation_precision", "output_precision"):
+        value = reference.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise BenchmarkSchemaError(f"reference.{key} must be a non-empty string.")
     _positive(reference.get("latency_ms"), "reference.latency_ms")
     _positive(reference.get("gflops"), "reference.gflops")
 
@@ -57,7 +61,7 @@ def validate_benchmark(data: dict[str, Any]) -> None:
     for index, row in enumerate(results):
         if not isinstance(row, dict):
             raise BenchmarkSchemaError(f"results[{index}] must be an object.")
-        for key in ("kernel_id", "name", "input_precision", "accumulation_precision"):
+        for key in ("kernel_id", "name", "input_precision", "accumulation_precision", "output_precision"):
             value = row.get(key)
             if not isinstance(value, str) or not value.strip():
                 raise BenchmarkSchemaError(
