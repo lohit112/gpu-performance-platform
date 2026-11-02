@@ -11,7 +11,6 @@ def test_detail_csv_layout_parses_named_metric_rows(tmp_path):
     )
     report = NsightReport.from_csv(str(csv_path))
     assert len(report.kernels) == 1
-    assert len(report.kernels) == 1  # the raw CSV units row is not a kernel launch
     kernel = report.kernels[0]
     assert kernel.sm_throughput_pct == 72.5
     assert kernel.achieved_occupancy_pct == 48.0
@@ -21,14 +20,15 @@ def test_detail_csv_layout_parses_named_metric_rows(tmp_path):
 def test_raw_csv_layout_parses_metric_columns(tmp_path):
     csv_path = tmp_path / "raw.csv"
     csv_path.write_text(
-        "Kernel Name,sm__throughput.avg.pct_of_peak_sustained_elapsed,"
+        "Kernel Name,Device Name,sm__throughput.avg.pct_of_peak_sustained_elapsed,"
         "dram__throughput.avg.pct_of_peak_sustained_elapsed\n"
-        "matmul_register_tiled,72.5,61.2\n"
+        "matmul_register_tiled,NVIDIA Tesla T4,72.5,61.2\n"
         "Units,%,%\n",
         encoding="utf-8",
     )
     report = NsightReport.from_csv(str(csv_path))
     kernel = report.kernels[0]
+    assert report.gpu_name == "NVIDIA Tesla T4"
     assert kernel.sm_throughput_pct == 72.5
     assert kernel.dram_throughput_pct == 61.2
     assert "dram_throughput_pct" in kernel.available_metrics
@@ -56,3 +56,16 @@ def test_unknown_metric_csv_is_rejected(tmp_path):
         assert "none of the configured metric columns matched" in str(exc)
         return
     raise AssertionError("CSV with no mapped metrics must be rejected.")
+
+
+def test_zero_valued_collected_counter_is_still_available(tmp_path):
+    csv_path = tmp_path / "zero.csv"
+    csv_path.write_text(
+        "Kernel Name,sm__throughput.avg.pct_of_peak_sustained_elapsed\n"
+        "matmul_wmma,0.0\n",
+        encoding="utf-8",
+    )
+    report = NsightReport.from_csv(str(csv_path))
+    metric = report.kernels[0]
+    assert metric.sm_throughput_pct == 0.0
+    assert "sm_throughput_pct" in metric.available_metrics
