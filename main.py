@@ -96,20 +96,20 @@ def run_kernels(args):
 
 
 def run_full_report(args):
-    # The report generator consumes the persisted artifact; run the live CUDA
-    # suite once here instead of running every analysis twice in main().
+    # The report generator consumes this run's artifact only. If CUDA fails,
+    # do not accidentally load a stale latest.json from a previous session.
+    benchmark_artifact = None
     try:
-        run_kernels(args)
+        benchmark_artifact = run_kernels(args)
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"\nLive CUDA benchmark not produced: {exc}")
-        print("No synthetic performance values were substituted.")
+        print("No synthetic or stale benchmark values will be substituted.")
 
     from report_gen.report_generator import ReportGenerator
     generator = ReportGenerator(
         output_dir=args.out_dir,
         author="Lohit Reddy",
-        benchmark_json=str((ROOT / args.benchmark_json).resolve())
-        if not Path(args.benchmark_json).is_absolute() else args.benchmark_json,
+        benchmark_json=str(benchmark_artifact) if benchmark_artifact is not None else None,
         nsight_csv=args.nsight_csv,
         include_demo_data=args.demo_data,
     )
