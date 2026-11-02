@@ -418,6 +418,12 @@ def visualize_nsight_report(
     x       = np.arange(n)
     width   = 0.35
 
+    def metric_value(kernel, field_name):
+        # A value absent from the capture is not a measured zero.
+        if kernel.available_metrics and field_name not in kernel.available_metrics:
+            return np.nan
+        return getattr(kernel, field_name)
+
     def style(ax):
         ax.set_facecolor(SURFACE)
         ax.tick_params(colors='#8888aa', labelsize=8)
@@ -430,16 +436,19 @@ def visualize_nsight_report(
 
     # ── Panel A: SM + Tensor Core utilization ─────────────────────────────────
     ax = axes[0]
-    ax.bar(x - width/2, [k.sm_throughput_pct for k in kernels],
-           width, color='#3d9abf', alpha=0.85, label='SM Util %', zorder=3)
-    ax.bar(x + width/2, [k.tensor_core_pct for k in kernels],
-           width, color='#f5c842', alpha=0.85, label='Tensor Core %', zorder=3)
+    sm_values = [metric_value(k, 'sm_throughput_pct') for k in kernels]
+    tc_values = [metric_value(k, 'tensor_core_pct') for k in kernels]
+    ax.bar(x - width/2, sm_values, width, color='#3d9abf', alpha=0.85, label='SM Util %', zorder=3)
+    ax.bar(x + width/2, tc_values, width, color='#f5c842', alpha=0.85, label='Tensor Core %', zorder=3)
 
     for i, k in enumerate(kernels):
-        ax.text(i - width/2, k.sm_throughput_pct + 1.5, f'{k.sm_throughput_pct:.0f}%',
-                ha='center', va='bottom', color='#3d9abf', fontsize=7, fontweight='bold')
-        if k.tensor_core_pct > 1:
-            ax.text(i + width/2, k.tensor_core_pct + 1.5, f'{k.tensor_core_pct:.0f}%',
+        sm_value = sm_values[i]
+        tc_value = tc_values[i]
+        if np.isfinite(sm_value):
+            ax.text(i - width/2, sm_value + 1.5, f'{sm_value:.0f}%',
+                    ha='center', va='bottom', color='#3d9abf', fontsize=7, fontweight='bold')
+        if np.isfinite(tc_value) and tc_value > 1:
+            ax.text(i + width/2, tc_value + 1.5, f'{tc_value:.0f}%',
                     ha='center', va='bottom', color='#f5c842', fontsize=7, fontweight='bold')
 
     ax.set_xticks(x); ax.set_xticklabels(knames, color='#8888aa', fontsize=8)
@@ -450,22 +459,36 @@ def visualize_nsight_report(
 
     # ── Panel B: Warp stall breakdown ─────────────────────────────────────────
     ax = axes[1]
-    STALL_COLORS = {
-        'Long Scoreboard\n(HBM miss)': ('#e8503a', [k.stall_long_scoreboard for k in kernels]),
-        'MIO Throttle\n(mem queue)':   ('#f5c842', [k.stall_mio_throttle     for k in kernels]),
-        'Barrier\n(syncthreads)':      ('#bf8c3d', [k.stall_barrier           for k in kernels]),
-        'Math Throttle\n(FP full)':    ('#3abf7a', [k.stall_math_throttle    for k in kernels]),
-        'Not Selected\n(healthy)':     ('#4a4a6a', [k.stall_not_selected     for k in kernels]),
-    }
-    bottoms = np.zeros(n)
-    for label, (color, vals) in STALL_COLORS.items():
-        vals = np.array(vals)
-        ax.bar(x, vals, width=0.6, bottom=bottoms, color=color, alpha=0.85, label=label, zorder=3)
-        for i, (v, b) in enumerate(zip(vals, bottoms)):
-            if v > 5:
-                ax.text(i, b + v/2, f'{v:.0f}%', ha='center', va='center',
-                        color='white', fontsize=7, fontweight='bold')
-        bottoms += vals
+    stall_fields = [
+        'stall_long_scoreboard', 'stall_mio_throttle', 'stall_barrier',
+        'stall_math_throttle', 'stall_not_selected',
+    ]
+    stalls_complete = all(
+        not k.available_metrics or all(field in k.available_metrics for field in stall_fields)
+        for k in kernels
+    )
+    if stalls_complete:
+        STALL_COLORS = {
+            'Long Scoreboard\n(HBM miss)': ('#e8503a', [k.stall_long_scoreboard for k in kernels]),
+            'MIO Throttle\n(mem queue)':   ('#f5c842', [k.stall_mio_throttle for k in kernels]),
+            'Barrier\n(syncthreads)':      ('#bf8c3d', [k.stall_barrier for k in kernels]),
+            'Math Throttle\n(FP full)':    ('#3abf7a', [k.stall_math_throttle for k in kernels]),
+            'Not Selected\n(eligible)':   ('#4a4a6a', [k.stall_not_selected for k in kernels]),
+        }
+        bottoms = np.zeros(n)
+        for label, (color, vals) in STALL_COLORS.items():
+            vals = np.array(vals)
+            ax.bar(x, vals, width=0.6, bottom=bottoms, color=color, alpha=0.85, label=label, zorder=3)
+            for i, (v, b) in enumerate(zip(vals, bottoms)):
+                if v > 5:
+                    ax.text(i, b + v/2, f'{v:.0f}%', ha='center', va='center',
+                            color='white', fontsize=7, fontweight='bold')
+            bottoms += vals
+    else:
+        ax.text(0.5, 0.5, "Warp-stall counters were not collected\nin this Nsight capture.",
+                transform=ax.transAxes, ha='center', va='center',
+                color='#aaaacc', fontsize=10)
+        ax.set_xlim(-0.5, max(0.5, n - 0.5))
 
     ax.set_xticks(x); ax.set_xticklabels(knames, color='#8888aa', fontsize=8)
     ax.set_ylabel('% of Warp Cycles', fontsize=9)
@@ -477,26 +500,28 @@ def visualize_nsight_report(
 
     # ── Panel C: Memory hierarchy hit rates ───────────────────────────────────
     ax = axes[2]
-    ax.bar(x - width/2, [k.l1_hit_rate_pct for k in kernels],
-           width, color='#3d6abf', alpha=0.85, label='L1 Hit Rate %', zorder=3)
-    ax.bar(x + width/2, [k.l2_hit_rate_pct for k in kernels],
-           width, color='#76b900', alpha=0.85, label='L2 Hit Rate %', zorder=3)
+    l1_values = [metric_value(k, 'l1_hit_rate_pct') for k in kernels]
+    l2_values = [metric_value(k, 'l2_hit_rate_pct') for k in kernels]
+    dram_values = [metric_value(k, 'dram_throughput_pct') for k in kernels]
+    ax.bar(x - width/2, l1_values, width, color='#3d6abf', alpha=0.85, label='L1 Hit Rate %', zorder=3)
+    ax.bar(x + width/2, l2_values, width, color='#76b900', alpha=0.85, label='L2 Hit Rate %', zorder=3)
 
-    # Overlay: DRAM throughput as line
+    # Overlay only measured DRAM throughput values.
     ax2_twin = ax.twinx()
-    ax2_twin.plot(x, [k.dram_throughput_pct for k in kernels],
-                  'o--', color='#e8503a', linewidth=2, markersize=7,
-                  label='DRAM BW %', zorder=5)
+    ax2_twin.plot(x, dram_values, 'o--', color='#e8503a', linewidth=2,
+                  markersize=7, label='DRAM BW %', zorder=5)
     ax2_twin.set_ylabel('DRAM BW % of Peak', color='#e8503a', fontsize=9)
     ax2_twin.tick_params(colors='#e8503a')
     ax2_twin.set_ylim(0, 110)
     for sp in ax2_twin.spines.values(): sp.set_edgecolor(BORDER)
 
-    for i, k in enumerate(kernels):
-        ax.text(i - width/2, k.l1_hit_rate_pct + 1.5, f'{k.l1_hit_rate_pct:.0f}%',
-                ha='center', va='bottom', color='#3d6abf', fontsize=7, fontweight='bold')
-        ax.text(i + width/2, k.l2_hit_rate_pct + 1.5, f'{k.l2_hit_rate_pct:.0f}%',
-                ha='center', va='bottom', color='#76b900', fontsize=7, fontweight='bold')
+    for i in range(n):
+        if np.isfinite(l1_values[i]):
+            ax.text(i - width/2, l1_values[i] + 1.5, f'{l1_values[i]:.0f}%',
+                    ha='center', va='bottom', color='#3d6abf', fontsize=7, fontweight='bold')
+        if np.isfinite(l2_values[i]):
+            ax.text(i + width/2, l2_values[i] + 1.5, f'{l2_values[i]:.0f}%',
+                    ha='center', va='bottom', color='#76b900', fontsize=7, fontweight='bold')
 
     ax.set_xticks(x); ax.set_xticklabels(knames, color='#8888aa', fontsize=8)
     ax.set_ylim(0, 110); ax.set_ylabel('Cache Hit Rate %', fontsize=9)
