@@ -1,0 +1,34 @@
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local CUDA build products
+build/
+matmul_bench
+matmul_bench.exe
+*.o
+*.obj
+*.cubin
+*.fatbin
+*.ptx
+*.sass
+
+# Generated reports (raw benchmark/profiling artifacts under results/ are not ignored)
+report_output/*
+!report_output/.gitkeep
+*.html.tmp
+
+# Editor / OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Temporary profile exports
+*.tmp
+*.log
