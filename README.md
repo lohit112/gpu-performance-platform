@@ -160,8 +160,11 @@ python -m benchmark.compare \
   --output results/comparison.csv
 ~~~
 
-Compare only runs with matching GPU, shape, layout, precision, accumulation
-mode, warm-up count, and timing protocol. Preserve each raw JSON artifact.
+The comparison CSV assigns a comparison_group using GPU, shape, layout,
+input/accumulation/output precision, warm-up count, and timed iterations.
+Different GPUs or run protocols are flagged as mismatches; FP16-input WMMA is
+kept in a different precision group from FP32 kernels. Preserve each raw JSON
+artifact and compare measured kernel latency/GFLOPS only within matching groups.
 The comparison utility does not manufacture missing backend results.
 
 To orchestrate all backends available in the current GPU environment:
