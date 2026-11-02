@@ -78,7 +78,7 @@ def run_kernels(args):
     output = Path(args.benchmark_json)
     if not output.is_absolute():
         output = ROOT / output
-    data = run_cuda_benchmark(ROOT, arch=args.arch, output_path=output)
+    data = run_cuda_benchmark(ROOT, arch=args.arch, size=args.size, output_path=output)
     reference = data["reference"]
     print(f"\nGPU: {data['metadata']['gpu_name']} (sm_{data['metadata']['compute_capability'].replace('.', '')})")
     print(f"cuBLAS reference: {reference['gflops']:.2f} GFLOPS")
@@ -125,6 +125,8 @@ def build_parser():
     parser.add_argument("--mfu", type=float, default=0.35)
     parser.add_argument("--arch", default="sm_75",
                         help="CUDA target architecture: sm_75, sm_80, sm_90, etc.")
+    parser.add_argument("--size", type=int, default=4096,
+                        help="Square GEMM dimension N for the CUDA benchmark.")
     parser.add_argument("--benchmark-json", default="results/benchmarks/latest.json")
     parser.add_argument("--nsight-csv", default=None,
                         help="CSV exported by a real Nsight Compute ncu capture")
