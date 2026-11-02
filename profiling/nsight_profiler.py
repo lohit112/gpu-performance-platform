@@ -64,7 +64,7 @@ def _parse_metric_value(raw_value: object, unit: str = "",
     """Parse a numeric Nsight value and normalize DRAM byte units to bytes."""
     raw = str(raw_value).strip().replace(",", "")
     match = re.fullmatch(
-        r"([+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][+-]?\\d+)?)\\s*([A-Za-zµμ%/]*)",
+        r"([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*([A-Za-zµμ%/]*)",
         raw,
     )
     if not match:
@@ -77,7 +77,7 @@ def _parse_metric_value(raw_value: object, unit: str = "",
         return None
 
     metric_unit = (unit or match.group(2) or "").strip().lower()
-    metric_unit = re.sub(r"[\\s_/]+", "", metric_unit)
+    metric_unit = re.sub(r"[\s_/]+", "", metric_unit)
     if field_name in {"dram_bytes_read", "dram_bytes_write"}:
         multipliers = {
             "": 1.0, "b": 1.0, "byte": 1.0, "bytes": 1.0,
