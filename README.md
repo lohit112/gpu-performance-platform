@@ -142,7 +142,9 @@ The runner writes:
 - results/benchmarks/latest.compile-stderr.txt — compiler diagnostics
 
 Select another target architecture and matrix size with --arch and --size.
-For example, an A100 run should use --arch sm_80 on an actual A100 machine.
+The handwritten CUDA suite requires N to be divisible by 16 because K3 uses
+aligned float4 accesses and K4 WMMA operates on complete 16×16 tiles. For
+example, an A100 run should use --arch sm_80 on an actual A100 machine.
 Only publish a result after the executable has compiled, completed validation,
 and run on that hardware.
 
