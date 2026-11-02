@@ -29,6 +29,10 @@ type, and measurement conditions. The CSV retains each artifact's path and
 hardware metadata so incompatible runs can be identified rather than silently
 mixed.
 
+For an orchestrated run, use `bash scripts/run_full_benchmark.sh sm_75 4096`.
+The CUDA backend is mandatory; CUTLASS and Triton are run only when their
+dependencies are available in the active environment.
+
 ## Schema fields
 
 - \`schema_version\`: currently 1
