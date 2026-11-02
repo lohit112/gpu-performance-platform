@@ -262,10 +262,11 @@ Nsight Compute installed:
 bash scripts/validate_t4.sh
 ~~~
 
-The script runs Compute Sanitizer on an aligned N=256 workload, then runs the
-full N=4096 cross-backend benchmark. It captures and parses full Nsight data by
-default. Set `RUN_NCU=0` to skip the profiler stage when Nsight Compute is not
-available:
+The script runs Compute Sanitizer memcheck, racecheck, and synccheck on N=80.
+That size is divisible by 16 for WMMA but not by the 32- or 64-wide CUDA tiles,
+so it exercises partial edge tiles. It then runs the full N=4096 cross-backend
+benchmark and captures/parses full Nsight data by default. Set `RUN_NCU=0` to
+skip the profiler stage when Nsight Compute is not available:
 
 ~~~bash
 RUN_NCU=0 bash scripts/validate_t4.sh
