@@ -29,10 +29,10 @@ ncu \
   --kernel-name-base demangled \
   --kernel-name "regex:$KERNEL_REGEX" \
   --set "$NCU_SET" \
-  --export "$PREFIX.ncu-rep" \
+  --export "$PREFIX" \
   "$BINARY"
 
-# Export the saved native report as raw CSV separately.
+# Nsight Compute appends the .ncu-rep extension to the export prefix.
 ncu --import "$PREFIX.ncu-rep" --csv --page raw > "$PREFIX.csv"
 
 echo "Nsight report: $PREFIX.ncu-rep"
