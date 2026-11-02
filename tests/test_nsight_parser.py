@@ -106,3 +106,52 @@ def test_high_long_scoreboard_without_dram_counter_states_uncertainty():
     report = NsightReport(gpu_name="Test GPU", cuda_version="unknown", kernels=[kernel])
     recs = report.generate_recommendations(kernel)
     assert any("DRAM throughput was not collected" in item for item in recs)
+
+
+
+def test_detail_csv_parses_dram_bytes_and_normalizes_metric_units(tmp_path):
+    csv_path = tmp_path / "dram_detail.csv"
+    csv_path.write_text(
+        "Kernel Name,Metric Name,Metric Unit,Metric Value\n"
+        "matmul_naive,dram__bytes_read.sum,Mbyte,2.5\n"
+        "matmul_naive,dram__bytes_write.sum,Kbyte,512\n",
+        encoding="utf-8",
+    )
+
+    report = NsightReport.from_csv(str(csv_path))
+    kernel = report.kernels[0]
+
+    assert kernel.dram_bytes_read == 2_500_000
+    assert kernel.dram_bytes_write == 512_000
+    assert {"dram_bytes_read", "dram_bytes_write"}.issubset(
+        set(kernel.available_metrics)
+    )
+
+
+def test_raw_csv_parses_dram_byte_counters(tmp_path):
+    csv_path = tmp_path / "dram_raw.csv"
+    csv_path.write_text(
+        "Kernel Name,dram__bytes_read.sum,dram__bytes_write.sum\n"
+        "matmul_naive,1048576,262144\n",
+        encoding="utf-8",
+    )
+
+    report = NsightReport.from_csv(str(csv_path))
+    kernel = report.kernels[0]
+
+    assert kernel.dram_bytes_read == 1_048_576
+    assert kernel.dram_bytes_write == 262_144
+
+
+def test_dram_byte_metric_with_unknown_unit_is_not_reported_as_bytes(tmp_path):
+    csv_path = tmp_path / "dram_unknown_unit.csv"
+    csv_path.write_text(
+        "Kernel Name,Metric Name,Metric Unit,Metric Value\n"
+        "matmul_naive,dram__bytes_read.sum,GB/s,12.5\n",
+        encoding="utf-8",
+    )
+
+    report = NsightReport.from_csv(str(csv_path))
+    kernel = report.kernels[0]
+
+    assert "dram_bytes_read" not in kernel.available_metrics
