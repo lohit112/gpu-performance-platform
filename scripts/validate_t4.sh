@@ -25,15 +25,19 @@ fi
 mkdir -p build results/profiling results/benchmarks
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 
-# Stage 1: run memcheck on a smaller aligned problem. N=256 exercises all
-# five kernels and keeps the naive kernel practical under instrumentation.
+# Stage 1: N=80 is divisible by 16 but not by 32 or 64. It exercises partial
+# edge tiles in K1/K2/K3 while keeping the naive kernel cheap under tooling.
 SANITIZER_BIN="build/matmul_sanitizer_t4"
 SANITIZER_LOG="results/profiling/"$STAMP"_compute_sanitizer.txt"
-nvcc -O1 -g -lineinfo -arch=sm_75 -DN=256 \
+nvcc -O1 -g -lineinfo -arch=sm_75 -DN=80 \
   cuda_kernels/matmul_suite.cu -lcublas -o "$SANITIZER_BIN"
-compute-sanitizer --tool memcheck --error-exitcode 1 "$SANITIZER_BIN" \
-  2>&1 | tee "$SANITIZER_LOG"
-echo "Compute Sanitizer log: $SANITIZER_LOG"
+
+for TOOL in memcheck racecheck synccheck; do
+  TOOL_LOG="results/profiling/"$STAMP"_"$TOOL".txt"
+  compute-sanitizer --tool "$TOOL" --error-exitcode 1 "$SANITIZER_BIN" \
+    2>&1 | tee "$TOOL_LOG"
+  echo "Compute Sanitizer $TOOL log: $TOOL_LOG"
+done
 
 # Stage 2: run all backends installed in this environment on the same 4096 GEMM.
 # CUDA is mandatory; CUTLASS and Triton are skipped when their dependencies are absent.
