@@ -26,5 +26,8 @@ jobs:
       - name: Compile Python modules
         run: python -m compileall -q main.py benchmark profiling roofline llm_profiler report_gen tests triton
 
+      - name: Check shell script syntax
+        run: bash -n scripts/profile_ncu.sh scripts/run_full_benchmark.sh
+
       - name: Run unit tests
         run: python -m pytest -q
