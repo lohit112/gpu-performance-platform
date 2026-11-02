@@ -699,6 +699,7 @@ int main() {
     printf("{\n");
     printf("  \"schema_version\": 1,\n");
     printf("  \"metadata\": {\n");
+    printf("    \"backend\": \"cuda\",\n");
     printf("    \"gpu_name\": \"%s\", \"compute_capability\": \"%d.%d\",\n",
            properties.name, properties.major, properties.minor);
     printf("    \"cuda_runtime_version\": %d, \"cuda_driver_version\": %d,\n",
