@@ -92,6 +92,14 @@ def run_kernels(args):
 
 
 def run_full_report(args):
+    # The report generator consumes the persisted artifact; run the live CUDA
+    # suite once here instead of running every analysis twice in main().
+    try:
+        run_kernels(args)
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"\nLive CUDA benchmark not produced: {exc}")
+        print("No synthetic performance values were substituted.")
+
     from report_gen.report_generator import ReportGenerator
     generator = ReportGenerator(
         output_dir=args.out_dir,
@@ -153,14 +161,6 @@ def main() -> int:
         elif args.module == "kernels":
             run_kernels(args)
         else:
-            run_roofline(args)
-            run_nsight(args)
-            run_llm(args)
-            try:
-                run_kernels(args)
-            except (OSError, RuntimeError, ValueError) as exc:
-                print(f"\nLive CUDA benchmark not produced: {exc}")
-                print("No fallback or synthetic performance values were substituted.")
             run_full_report(args)
     except (RuntimeError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
