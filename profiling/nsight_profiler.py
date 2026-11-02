@@ -160,7 +160,7 @@ class NsightReport:
                 reader = csv.DictReader(f)
                 for row in reader:
                     kernel_name = row.get('Kernel Name', 'unknown').strip()
-                    if not kernel_name:
+                    if not kernel_name or kernel_name.lower() in {'units', 'unit'}:
                         continue
 
                     if kernel_name not in kernels:
