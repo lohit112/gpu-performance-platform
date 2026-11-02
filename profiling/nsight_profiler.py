@@ -182,9 +182,13 @@ class NsightReport:
                             pass
 
         except FileNotFoundError:
-            print(f"[NsightReport] CSV not found: {csv_path}")
-            print("[NsightReport] Generating synthetic demo data for visualization...")
-            return cls._demo_report()
+            raise FileNotFoundError(f"Nsight Compute CSV not found: {csv_path}")
+
+        if not kernels:
+            raise ValueError(
+                f"No kernel metrics were parsed from {csv_path}. "
+                "Check that this is an ncu --csv --page raw export."
+            )
 
         return cls(
             gpu_name=gpu_name,
@@ -196,9 +200,10 @@ class NsightReport:
     @classmethod
     def _demo_report(cls) -> 'NsightReport':
         """
-        Synthetic Nsight data matching expected T4 results.
-        Use this when no real GPU is available (e.g. development, CI).
-        Values are realistic and defensible in an interview.
+        Synthetic placeholder values used only to exercise charts and report layouts.
+
+        These values are not Nsight captures and must never be cited as measurements.
+        Use this method only after explicitly selecting demo mode.
         """
         return cls(
             gpu_name="Tesla T4 (demo data)",
