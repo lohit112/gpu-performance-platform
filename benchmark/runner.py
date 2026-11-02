@@ -38,6 +38,11 @@ def run_cuda_benchmark(repo_root: str | Path, *, arch: str = "sm_75",
         raise ValueError("arch must look like sm_75, sm_80, or sm_90.")
     if size <= 0:
         raise ValueError("size must be a positive integer.")
+    if size % 16 != 0:
+        raise ValueError(
+            "CUDA GEMM size must be divisible by 16 because K3 uses aligned float4 "
+            "accesses and K4 WMMA operates on complete 16x16 tiles."
+        )
     nvcc = shutil.which("nvcc")
     if not nvcc:
         raise RuntimeError(
