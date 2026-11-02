@@ -163,6 +163,14 @@ class NsightReport:
                     if not kernel_name or kernel_name.lower() in {'units', 'unit'}:
                         continue
 
+                    device_name = (
+                        row.get('Device Name', '').strip()
+                        or row.get('GPU Name', '').strip()
+                        or row.get('Device', '').strip()
+                    )
+                    if device_name and gpu_name == "Unknown GPU":
+                        gpu_name = device_name
+
                     if kernel_name not in kernels:
                         kernels[kernel_name] = NsightMetrics(kernel_name=kernel_name)
 
@@ -198,12 +206,7 @@ class NsightReport:
                 f"No kernel rows were parsed from {csv_path}. "
                 "Check that this is an ncu --csv export."
             )
-        mapped_count = 0
-        for metric in kernels.values():
-            mapped_count += sum(
-                getattr(metric, field_name) != 0
-                for field_name in set(METRIC_MAP.values())
-            )
+        mapped_count = sum(len(metric.available_metrics) for metric in kernels.values())
         if mapped_count == 0:
             raise ValueError(
                 f"Kernel rows were found in {csv_path}, but none of the configured "
@@ -577,12 +580,13 @@ def run_ncu_profiling(
 
     output_path = Path(output_csv)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path = output_path.with_suffix(".ncu-rep")
+    report_prefix = output_path.with_suffix("")
+    report_path = Path(str(report_prefix) + ".ncu-rep")
 
     command = [
         "ncu",
         "--metrics", ",".join(metrics),
-        "-o", str(report_path),
+        "-o", str(report_prefix),
         binary_path,
     ]
     print(f"Running: {' '.join(command)}")
