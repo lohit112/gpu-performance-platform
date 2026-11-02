@@ -710,14 +710,16 @@ int main() {
            properties.name, properties.major, properties.minor);
     printf("    \"cuda_runtime_version\": %d, \"cuda_driver_version\": %d,\n",
            runtime_version, driver_version);
-    printf("    \"matrix_size\": %d, \"warmup_iterations\": %d, \"timed_iterations\": %d\n",
-           N, WARMUP, TIMED);
+    printf("    \"matrix_size\": %d, \"shape\": {\"M\": %d, \"N\": %d, \"K\": %d}, \"layout\": \"row_major\",\n",
+           N, N, N, N);
+    printf("    \"warmup_iterations\": %d, \"timed_iterations\": %d\n",
+           WARMUP, TIMED);
     printf("  },\n");
-    printf("  \"reference\": { \"name\": \"cuBLAS SGEMM FP32\", \"latency_ms\": %.6f, \"gflops\": %.6f },\n",
+    printf("  \"reference\": { \"name\": \"cuBLAS SGEMM FP32\", \"input_precision\": \"FP32\", \"accumulation_precision\": \"FP32\", \"output_precision\": \"FP32\", \"latency_ms\": %.6f, \"gflops\": %.6f },\n",
            cublas_ms, cublas_gflops);
     printf("  \"results\": [\n");
     for (int i = 0; i < 5; ++i) {
-        printf("    { \"kernel_id\": \"K%d\", \"name\": \"%s\", \"input_precision\": \"%s\", \"accumulation_precision\": \"FP32\", \"latency_ms\": %.6f, \"gflops\": %.6f, \"pct_of_cublas\": %.4f, \"validation\": { \"frobenius_relative_error\": %.10e, \"max_absolute_error\": %.10e, \"passed\": %s } }%s\n",
+        printf("    { \"kernel_id\": \"K%d\", \"name\": \"%s\", \"input_precision\": \"%s\", \"accumulation_precision\": \"FP32\", \"output_precision\": \"FP32\", \"latency_ms\": %.6f, \"gflops\": %.6f, \"pct_of_cublas\": %.4f, \"validation\": { \"frobenius_relative_error\": %.10e, \"max_absolute_error\": %.10e, \"passed\": %s } }%s\n",
                i, kernel_names[i], input_precision[i], kernel_ms[i], kernel_gflops[i],
                kernel_pct[i], validation[i].frobenius_relative_error,
                validation[i].max_absolute_error, validation[i].passed ? "true" : "false",
