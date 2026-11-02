@@ -37,7 +37,9 @@ using namespace nvcuda;
  * N must be divisible by 4 for float4 loads (K3) and by WMMA_M/N/K=16 (K4).
  * 4096 = 256 × 16 = 1024 × 4. Both conditions satisfied.
  */
+#ifndef N
 #define N         4096
+#endif
 #define TILE_K0   16
 #define TILE_K1   32
 #define BLOCK_M   64
