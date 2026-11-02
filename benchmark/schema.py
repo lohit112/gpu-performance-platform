@@ -76,19 +76,18 @@ def validate_benchmark(data: dict[str, Any]) -> None:
             _nonnegative(row[pct_key], f"results[{index}].{pct_key}")
 
         validation = row.get("validation")
-        if validation is not None:
-            if not isinstance(validation, dict) or type(validation.get("passed")) is not bool:
-                raise BenchmarkSchemaError(
-                    f"results[{index}].validation must include boolean passed."
-                )
-            _nonnegative(
-                validation.get("frobenius_relative_error"),
-                f"results[{index}].validation.frobenius_relative_error",
+        if not isinstance(validation, dict) or type(validation.get("passed")) is not bool:
+            raise BenchmarkSchemaError(
+                f"results[{index}].validation must include boolean passed."
             )
-            _nonnegative(
-                validation.get("max_absolute_error"),
-                f"results[{index}].validation.max_absolute_error",
-            )
+        _nonnegative(
+            validation.get("frobenius_relative_error"),
+            f"results[{index}].validation.frobenius_relative_error",
+        )
+        _nonnegative(
+            validation.get("max_absolute_error"),
+            f"results[{index}].validation.max_absolute_error",
+        )
 
 
 def _finite_number(value: Any, field: str) -> float:
