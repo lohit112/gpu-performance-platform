@@ -6,7 +6,7 @@ and Triton executables.
 ## Run the handwritten CUDA suite
 
 \`\`\`bash
-python -m benchmark.runner --arch sm_75
+python -m benchmark.runner --arch sm_75 --size 4096 --warmup 5 --iterations 20
 \`\`\`
 
 This command requires \`nvcc\`, cuBLAS, an NVIDIA driver, and a supported NVIDIA
