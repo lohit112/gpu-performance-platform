@@ -50,7 +50,9 @@ class ReportGenerator:
 
     def run_nsight_analysis(self) -> None:
         print("[2/4] Loading Nsight Compute data...")
-        if self.nsight_csv and self.nsight_csv.is_file():
+        if self.nsight_csv is not None:
+            if not self.nsight_csv.is_file():
+                raise FileNotFoundError(f"Nsight CSV not found: {self.nsight_csv}")
             self.nsight_report = NsightReport.from_csv(str(self.nsight_csv))
         elif self.include_demo_data:
             self.nsight_report = NsightReport._demo_report()
