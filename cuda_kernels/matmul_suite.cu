@@ -34,8 +34,8 @@
 using namespace nvcuda;
 
 /* ─── Dimensions ─────────────────────────────────────────────────────────────
- * N must be divisible by 4 for float4 loads (K3) and by WMMA_M/N/K=16 (K4).
- * 4096 = 256 × 16 = 1024 × 4. Both conditions satisfied.
+ * N must be divisible by 16. This also satisfies K3's 4-float vector alignment.
+ * The runner enforces this constraint before compiling the CUDA executable.
  */
 #ifndef N
 #define N         4096
@@ -77,12 +77,14 @@ static_assert(N % 16 == 0,
 /* ═══════════════════════════════════════════════════════════════════════════
  * KERNEL 0: NAIVE MatMul
  * ═══════════════════════════════════════════════════════════════════════════
- * One thread per output element. Reads full rows/columns from HBM on every
- * call — no data reuse whatsoever.
+ * One thread per output element. Each output issues N global loads from A and
+ * N from B; this kernel has no explicit block-level shared-memory or
+ * register-tile reuse. Hardware caches may still capture some repeated loads.
  *
- * Arithmetic Intensity = 2N³ FLOPs / (2N³ × 4 bytes) = 0.25 FLOP/Byte.
- * At 0.25 FLOP/Byte on T4 (320 GB/s), ceiling = 80 GFLOPS.
- * We measure ~65 GFLOPS: 81% of the bandwidth ceiling. Purely BW-limited.
+ * A source-level, no-cache-reuse traffic estimate is 2N³ FLOPs divided by
+ * 8N³ input bytes = 0.25 FLOP/Byte. This is not measured DRAM arithmetic
+ * intensity: use Nsight DRAM-byte counters to establish actual traffic and
+ * classify the measured kernel on a roofline.
  */
 __global__ void matmul_naive(const float* A, const float* B, float* C, int n) {
     int row = blockIdx.y * blockDim.y + threadIdx.y;
@@ -101,7 +103,8 @@ __global__ void matmul_naive(const float* A, const float* B, float* C, int n) {
  * Each 32×32 thread block loads one TILE_K1×TILE_K1 tile of A and B into
  * shared memory. All 1024 threads reuse those 1024 values → 32× HBM reduction.
  *
- * Arithmetic Intensity = TILE_K1 / 2 = 16 FLOP/Byte.
+ * Idealized global-input arithmetic intensity is TILE_K1 / 4 = 8 FLOP/Byte:
+ * two TILE_K1×TILE_K1 FP32 input tiles are loaded for 2×TILE_K1³ FLOPs.
  *
  * DEADLOCK FIX (vs original):
  *   The original K1 used a bare `if (row < n && a_col < n)` guard inside the
@@ -149,8 +152,11 @@ __global__ void matmul_tiled_shmem(const float* A, const float* B, float* C, int
  * are kept in per-thread registers. Outer products over BLOCK_K strips reuse
  * shared-memory inputs across multiple output accumulators.
  *
- * Arithmetic Intensity ≈ BLOCK_M / 2 = 32 FLOP/Byte over SHMEM accesses.
- * This is the technique that separates student GEMM from production GEMM.
+ * For idealized global input traffic, one K strip performs
+ * 2×BLOCK_M×BLOCK_N×BLOCK_K FLOPs while loading A and B tiles totaling
+ * 4×(BLOCK_M×BLOCK_K + BLOCK_K×BLOCK_N) bytes. This is 16 FLOP/Byte for the
+ * current 64×64×8 tile. Actual DRAM traffic can differ due to cache behavior.
+ * Register tiling also reuses each loaded operand across multiple accumulators.
  */
 __global__ void matmul_register_tiled(const float* A, const float* B, float* C, int n) {
     __shared__ float sA[BLOCK_M][BLOCK_K];
@@ -227,18 +233,18 @@ __global__ void matmul_register_tiled(const float* A, const float* B, float* C, 
  * float4 gives: 4× more data per instruction, 4× fewer address calculations,
  * 4× fewer issue slots consumed in the load pipeline.
  *
- * Requirements (all satisfied for N=4096):
- *   - Pointer 16-byte aligned: cudaMalloc guarantees 256-byte alignment ✓
- *   - N divisible by 4: 4096 / 4 = 1024 ✓
- *   - TILE_K1 divisible by 4: 32 / 4 = 8 ✓
+ * Requirements:
+ *   - Base pointers are cudaMalloc-aligned.
+ *   - N is divisible by 16 (and therefore by 4), preserving row alignment.
+ *   - TILE_VEC and each vector width are divisible by 4.
  *
  * Each thread loads 4 consecutive A elements per tile step using one LDG.128.
  * We use TILE_K1/4 threads in the x-dimension to cover the full tile width.
  * The SHMEM layout is [TILE_K1][TILE_K1]: tx indexes into groups of 4 floats.
  *
- * NOTE: float4 loads only help when the access IS coalesced and the bottleneck
- * IS instruction throughput, not latency. On memory-bound kernels like K3,
- * the gain vs K1 is instruction count, not bandwidth (we're already near BW peak).
+ * NOTE: float4 changes the load/store instruction shape; it does not reduce
+ * the number of input bytes. Any benefit must be established from measured
+ * latency and instruction/throughput counters, not assumed from vector width.
  */
 #define TILE_VEC  32
 #define VEC_WIDTH 4
@@ -333,7 +339,9 @@ __global__ void matmul_vectorized(const float* __restrict__ A,
  * KERNEL 4: WMMA TENSOR CORE (Volta+ / sm_70+)
  * ═══════════════════════════════════════════════════════════════════════════
  * Tensor cores execute a 16×16×16 warp-synchronous matrix multiply.
- * Result: 8192 FMADs per warp per instruction vs 32 for CUDA cores.
+ * A 16×16×16 warp MMA performs 4096 fused multiply-adds (8192 FLOPs) per
+ * warp-level matrix instruction. Compare operation counts using the same
+ * convention (one FMA = two FLOPs).
  *
  * This kernel:
  *   1. Takes pre-converted FP16 inputs (conversion handled in main()).
@@ -341,9 +349,9 @@ __global__ void matmul_vectorized(const float* __restrict__ A,
  *   3. Sweeps the k-dimension in strips of WMMA_K=16.
  *   4. Accumulates in FP32 for numerical stability.
  *
- * The FP32 conversion in main() (K4 section below) is not theater:
- * it correctly initializes __half device buffers from the FP32 source data,
- * which is required before any wmma::load_matrix_sync call.
+ * The FP32-to-FP16 conversion in main() initializes the __half device
+ * buffers before wmma::load_matrix_sync. Its preprocessing time is recorded
+ * separately from the WMMA kernel-only latency.
  */
 __global__ void matmul_wmma_tensor_core(
     const __half* __restrict__ A,
@@ -705,8 +713,9 @@ int main() {
     }
 
     printf("\n");
-    printf("  Compile: nvcc -O3 -arch=sm_75 -lcublas matmul_suite.cu -o matmul_bench\n");
-    printf("  Profile: ncu --set full -o profile ./matmul_bench\n");
+    printf("  Reproduce with: python -m benchmark.runner --arch <sm_XX> --size %d --warmup %d --iterations %d\n",
+           N, WARMUP, TIMED);
+    printf("  Capture counters with: bash scripts/profile_ncu.sh build/matmul_bench\n");
     printf("========================================================\n\n");
 
     /* ── Emit a machine-readable result artifact between stable markers. ── */
