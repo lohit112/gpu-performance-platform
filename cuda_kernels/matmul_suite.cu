@@ -18,10 +18,8 @@
  *   ncu --set full -o matmul_profile ./matmul_bench
  *
  * ROOFLINE CONTEXT:
- *   Naive GEMM OI = 0.25 FLOP/Byte (no data reuse, each element read N times).
- *   T4 bandwidth = 320 GB/s → ceiling at OI=0.25 is 80 GFLOPS.
- *   Tiled GEMM OI = TILE_SIZE / 2 FLOP/Byte (data reused TILE_SIZE times).
- *   WMMA TC peak: 65 TFLOPS FP16. Ridge point: 65000/320 ≈ 203 FLOP/Byte.
+ *   Roofline ceilings are hardware/model assumptions, not measurements from
+ *   this executable. Use measured DRAM bytes and profiler data for empirical OI.
  */
 
 #include <cuda_runtime.h>
@@ -136,8 +134,8 @@ __global__ void matmul_tiled_shmem(const float* A, const float* B, float* C, int
  * KERNEL 2: REGISTER TILED MatMul
  * ═══════════════════════════════════════════════════════════════════════════
  * Each thread computes a THREAD_M×THREAD_N (4×4) output tile. Accumulators
- * live in registers (0-cycle latency vs 2-4 cycle SHMEM). Outer products over
- * BLOCK_K strips amortize the SHMEM→register traffic.
+ * are kept in per-thread registers. Outer products over BLOCK_K strips reuse
+ * shared-memory inputs across multiple output accumulators.
  *
  * Arithmetic Intensity ≈ BLOCK_M / 2 = 32 FLOP/Byte over SHMEM accesses.
  * This is the technique that separates student GEMM from production GEMM.
@@ -153,17 +151,31 @@ __global__ void matmul_register_tiled(const float* A, const float* B, float* C, 
     float acc[THREAD_M][THREAD_N] = {{0.0f}};
 
     for (int kb = 0; kb < n; kb += BLOCK_K) {
-        #pragma unroll
-        for (int i = 0; i < THREAD_M; i++) {
-            int r = blockIdx.y * BLOCK_M + ty * THREAD_M + i;
-            int c = kb + tx;
-            sA[ty * THREAD_M + i][tx] = (r < n && c < n) ? A[r * n + c] : 0.0f;
+        /*
+         * Load both shared-memory tiles with a linear thread index. The block
+         * has 256 threads, while each tile contains 512 floats, so each thread
+         * loads two elements per tile. This avoids using tx (0..15) as a
+         * BLOCK_K (0..7) index and ty (0..15) as a BLOCK_K row index.
+         */
+        const int linear_tid = ty * blockDim.x + tx;
+        const int threads_per_block = blockDim.x * blockDim.y;
+
+        for (int idx = linear_tid; idx < BLOCK_M * BLOCK_K; idx += threads_per_block) {
+            const int tile_row = idx / BLOCK_K;
+            const int tile_col = idx % BLOCK_K;
+            const int global_row = blockIdx.y * BLOCK_M + tile_row;
+            const int global_k = kb + tile_col;
+            sA[tile_row][tile_col] =
+                (global_row < n && global_k < n) ? A[global_row * n + global_k] : 0.0f;
         }
-        #pragma unroll
-        for (int i = 0; i < THREAD_N; i++) {
-            int r = kb + ty;
-            int c = blockIdx.x * BLOCK_N + tx * THREAD_N + i;
-            sB[ty][tx * THREAD_N + i] = (r < n && c < n) ? B[r * n + c] : 0.0f;
+
+        for (int idx = linear_tid; idx < BLOCK_K * BLOCK_N; idx += threads_per_block) {
+            const int tile_row = idx / BLOCK_N;
+            const int tile_col = idx % BLOCK_N;
+            const int global_k = kb + tile_row;
+            const int global_col = blockIdx.x * BLOCK_N + tile_col;
+            sB[tile_row][tile_col] =
+                (global_k < n && global_col < n) ? B[global_k * n + global_col] : 0.0f;
         }
         __syncthreads();
 
@@ -336,7 +348,7 @@ __global__ void matmul_wmma_tensor_core(
     if (warp_row >= n || warp_col >= n) return;
 
     wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, __half, wmma::row_major> a_frag;
-    wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, __half, wmma::col_major> b_frag;
+    wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, __half, wmma::row_major> b_frag;
     wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> c_frag;
 
     wmma::fill_fragment(c_frag, 0.0f);
@@ -359,10 +371,62 @@ __global__ void fp32_to_fp16(const float* src, __half* dst, int n) {
     if (i < n) dst[i] = __float2half(src[i]);
 }
 
+/* ─── Numerical validation ─────────────────────────────────────────────── */
+struct ValidationResult {
+    double frobenius_relative_error;
+    double max_absolute_error;
+    bool passed;
+};
+
+static ValidationResult compare_with_reference(
+    const float* reference,
+    const float* actual,
+    size_t count,
+    double tolerance
+) {
+    double diff_sq = 0.0;
+    double ref_sq = 0.0;
+    double max_abs = 0.0;
+
+    for (size_t i = 0; i < count; ++i) {
+        const double ref = static_cast<double>(reference[i]);
+        const double got = static_cast<double>(actual[i]);
+        const double diff = got - ref;
+        const double abs_diff = fabs(diff);
+        diff_sq += diff * diff;
+        ref_sq += ref * ref;
+        if (abs_diff > max_abs) max_abs = abs_diff;
+    }
+
+    const double ref_norm = sqrt(ref_sq);
+    const double rel_error = sqrt(diff_sq) / (ref_norm > 1e-30 ? ref_norm : 1.0);
+    return {rel_error, max_abs, rel_error <= tolerance};
+}
+
+static ValidationResult validate_device_output(
+    const char* kernel_name,
+    const float* reference,
+    const float* device_output,
+    float* host_scratch,
+    size_t count,
+    double tolerance
+) {
+    CUDA_CHECK(cudaMemcpy(host_scratch, device_output, count * sizeof(float),
+                          cudaMemcpyDeviceToHost));
+    ValidationResult result = compare_with_reference(reference, host_scratch, count, tolerance);
+    printf("%-30s relative error=%10.3e  max abs=%10.3e  tol=%.1e  %s\n",
+           kernel_name,
+           result.frobenius_relative_error,
+           result.max_absolute_error,
+           tolerance,
+           result.passed ? "PASS" : "FAIL");
+    return result;
+}
+
 /* ─── Timing helper ──────────────────────────────────────────────────────── */
 static float gpu_time_ms(cudaEvent_t start, cudaEvent_t stop) {
     float ms;
-    cudaEventElapsedTime(&ms, start, stop);
+    CUDA_CHECK(cudaEventElapsedTime(&ms, start, stop));
     return ms;
 }
 
@@ -378,6 +442,7 @@ int main() {
     /* ── Host allocation ─────────────────────────────────────────────────── */
     size_t bytes   = (size_t)N * N * sizeof(float);
     float *h_A = (float*)malloc(bytes), *h_B = (float*)malloc(bytes);
+    if (!h_A || !h_B) { fprintf(stderr, "Host allocation failed\n"); return EXIT_FAILURE; }
     srand(42);
     for (int i = 0; i < N * N; i++) {
         h_A[i] = (float)rand() / RAND_MAX;
@@ -411,6 +476,82 @@ int main() {
     CUDA_CHECK(cudaEventCreate(&ev_stop));
 
     double cublas_gflops = 0.0;
+    double cublas_ms = 0.0;
+    double kernel_ms[5] = {0.0};
+    double kernel_gflops[5] = {0.0};
+    double kernel_pct[5] = {0.0};
+    ValidationResult validation[5] = {};
+
+    float* h_reference = (float*)malloc(bytes);
+    float* h_validation = (float*)malloc(bytes);
+    if (!h_reference || !h_validation) {
+        fprintf(stderr, "Validation host allocation failed\n");
+        return EXIT_FAILURE;
+    }
+
+    /* Build an independent FP32 cuBLAS reference before timing any custom kernel. */
+    {
+        cublasHandle_t reference_handle;
+        CUBLAS_CHECK(cublasCreate(&reference_handle));
+        float alpha = 1.0f, beta = 0.0f;
+        CUBLAS_CHECK(cublasSgemm(reference_handle, CUBLAS_OP_N, CUBLAS_OP_N,
+            N, N, N, &alpha, d_B, N, d_A, N, &beta, d_C, N));
+        CUDA_CHECK(cudaDeviceSynchronize());
+        CUDA_CHECK(cudaMemcpy(h_reference, d_C, bytes, cudaMemcpyDeviceToHost));
+        CUBLAS_CHECK(cublasDestroy(reference_handle));
+    }
+
+    printf("CORRECTNESS VALIDATION (reference: cuBLAS SGEMM FP32)\n");
+    printf("--------------------------------------------------------------\n");
+    {
+        dim3 block(TILE_K0, TILE_K0);
+        dim3 grid((N + TILE_K0 - 1) / TILE_K0, (N + TILE_K0 - 1) / TILE_K0);
+        matmul_naive<<<grid, block>>>(d_A, d_B, d_C, N);
+        CUDA_CHECK(cudaDeviceSynchronize());
+        validation[0] = validate_device_output("K0: Naive", h_reference, d_C, h_validation,
+                                               (size_t)N * N, 1e-4);
+    }
+    {
+        dim3 block(TILE_K1, TILE_K1);
+        dim3 grid((N + TILE_K1 - 1) / TILE_K1, (N + TILE_K1 - 1) / TILE_K1);
+        matmul_tiled_shmem<<<grid, block>>>(d_A, d_B, d_C, N);
+        CUDA_CHECK(cudaDeviceSynchronize());
+        validation[1] = validate_device_output("K1: Shared Memory", h_reference, d_C, h_validation,
+                                               (size_t)N * N, 1e-4);
+    }
+    {
+        dim3 block(BLOCK_N / THREAD_N, BLOCK_M / THREAD_M);
+        dim3 grid((N + BLOCK_N - 1) / BLOCK_N, (N + BLOCK_M - 1) / BLOCK_M);
+        matmul_register_tiled<<<grid, block>>>(d_A, d_B, d_C, N);
+        CUDA_CHECK(cudaDeviceSynchronize());
+        validation[2] = validate_device_output("K2: Register Tiled", h_reference, d_C, h_validation,
+                                               (size_t)N * N, 1e-4);
+    }
+    {
+        dim3 block(TILE_VEC / VEC_WIDTH, TILE_VEC);
+        dim3 grid((N + TILE_VEC - 1) / TILE_VEC, (N + TILE_VEC - 1) / TILE_VEC);
+        matmul_vectorized<<<grid, block>>>(d_A, d_B, d_C, N);
+        CUDA_CHECK(cudaDeviceSynchronize());
+        validation[3] = validate_device_output("K3: float4", h_reference, d_C, h_validation,
+                                               (size_t)N * N, 1e-4);
+    }
+    {
+        const int warps_per_block = 4;
+        dim3 block(32, warps_per_block);
+        dim3 grid((N + WMMA_N - 1) / WMMA_N,
+                  (N + WMMA_M * warps_per_block - 1) / (WMMA_M * warps_per_block));
+        matmul_wmma_tensor_core<<<grid, block>>>(d_A_half, d_B_half, d_C, N);
+        CUDA_CHECK(cudaDeviceSynchronize());
+        validation[4] = validate_device_output("K4: WMMA FP16 input / FP32 acc", h_reference, d_C,
+                                               h_validation, (size_t)N * N, 5e-3);
+    }
+    for (int i = 0; i < 5; ++i) {
+        if (!validation[i].passed) {
+            fprintf(stderr, "Correctness validation failed for K%d; benchmark aborted.\n", i);
+            return EXIT_FAILURE;
+        }
+    }
+    printf("Validation: ALL KERNELS PASS\n\n");
 
     /* ── cuBLAS reference ────────────────────────────────────────────────── */
     {
@@ -431,6 +572,7 @@ int main() {
         CUDA_CHECK(cudaEventSynchronize(ev_stop));
 
         float ms = gpu_time_ms(ev_start, ev_stop) / TIMED;
+        cublas_ms = ms;
         cublas_gflops = GFLOPS_REF / (ms / 1000.0);
         printf("%-30s  %7.2f ms   %9.2f GFLOPS   (100%% efficiency)\n",
                "cuBLAS (reference)", ms, cublas_gflops);
@@ -451,6 +593,7 @@ int main() {
         CUDA_CHECK(cudaEventSynchronize(ev_stop));
         float ms = gpu_time_ms(ev_start, ev_stop) / TIMED;
         double gf = GFLOPS_REF / (ms / 1000.0);
+        kernel_ms[0] = ms; kernel_gflops[0] = gf; kernel_pct[0] = 100.0 * gf / cublas_gflops;
         printf("K0: Naive                       %7.2f ms   %9.2f GFLOPS   (%.1f%% cuBLAS)\n",
                ms, gf, 100.0*gf/cublas_gflops);
     }
@@ -467,6 +610,7 @@ int main() {
         CUDA_CHECK(cudaEventSynchronize(ev_stop));
         float ms = gpu_time_ms(ev_start, ev_stop) / TIMED;
         double gf = GFLOPS_REF / (ms / 1000.0);
+        kernel_ms[1] = ms; kernel_gflops[1] = gf; kernel_pct[1] = 100.0 * gf / cublas_gflops;
         printf("K1: Shared Mem Tiled            %7.2f ms   %9.2f GFLOPS   (%.1f%% cuBLAS)\n",
                ms, gf, 100.0*gf/cublas_gflops);
     }
@@ -483,6 +627,7 @@ int main() {
         CUDA_CHECK(cudaEventSynchronize(ev_stop));
         float ms = gpu_time_ms(ev_start, ev_stop) / TIMED;
         double gf = GFLOPS_REF / (ms / 1000.0);
+        kernel_ms[2] = ms; kernel_gflops[2] = gf; kernel_pct[2] = 100.0 * gf / cublas_gflops;
         printf("K2: Register Tiled              %7.2f ms   %9.2f GFLOPS   (%.1f%% cuBLAS)\n",
                ms, gf, 100.0*gf/cublas_gflops);
     }
@@ -502,6 +647,7 @@ int main() {
         CUDA_CHECK(cudaEventSynchronize(ev_stop));
         float ms = gpu_time_ms(ev_start, ev_stop) / TIMED;
         double gf = GFLOPS_REF / (ms / 1000.0);
+        kernel_ms[3] = ms; kernel_gflops[3] = gf; kernel_pct[3] = 100.0 * gf / cublas_gflops;
         printf("K3: Vectorized (float4 loads)   %7.2f ms   %9.2f GFLOPS   (%.1f%% cuBLAS)\n",
                ms, gf, 100.0*gf/cublas_gflops);
     }
@@ -526,6 +672,7 @@ int main() {
         float ms = gpu_time_ms(ev_start, ev_stop) / TIMED;
         /* K4 uses FP16 inputs; compare GFLOPS to FP32 cuBLAS to show TC speedup */
         double gf = GFLOPS_REF / (ms / 1000.0);
+        kernel_ms[4] = ms; kernel_gflops[4] = gf; kernel_pct[4] = 100.0 * gf / cublas_gflops;
         printf("K4: WMMA Tensor Core (FP16)     %7.2f ms   %9.2f GFLOPS   (%.1f%% cuBLAS)\n",
                ms, gf, 100.0*gf/cublas_gflops);
     }
@@ -535,15 +682,49 @@ int main() {
     printf("  Profile: ncu --set full -o profile ./matmul_bench\n");
     printf("========================================================\n\n");
 
-    /* ── Output machine-readable results for main.py subprocess parsing ──── */
+    /* ── Emit a machine-readable result artifact between stable markers. ── */
+    int device = 0, runtime_version = 0, driver_version = 0;
+    cudaDeviceProp properties;
+    CUDA_CHECK(cudaGetDevice(&device));
+    CUDA_CHECK(cudaGetDeviceProperties(&properties, device));
+    CUDA_CHECK(cudaRuntimeGetVersion(&runtime_version));
+    CUDA_CHECK(cudaDriverGetVersion(&driver_version));
+
+    const char* kernel_names[5] = {
+        "K0: Naive", "K1: Shared Memory Tiled", "K2: Register Tiled",
+        "K3: float4 Vectorized", "K4: WMMA Tensor Core"
+    };
+    const char* input_precision[5] = {"FP32", "FP32", "FP32", "FP32", "FP16"};
     printf("BENCHMARK_JSON_START\n");
-    printf("See timing above — parse by kernel name line.\n");
+    printf("{\n");
+    printf("  \"schema_version\": 1,\n");
+    printf("  \"metadata\": {\n");
+    printf("    \"gpu_name\": \"%s\", \"compute_capability\": \"%d.%d\",\n",
+           properties.name, properties.major, properties.minor);
+    printf("    \"cuda_runtime_version\": %d, \"cuda_driver_version\": %d,\n",
+           runtime_version, driver_version);
+    printf("    \"matrix_size\": %d, \"warmup_iterations\": %d, \"timed_iterations\": %d\n",
+           N, WARMUP, TIMED);
+    printf("  },\n");
+    printf("  \"reference\": { \"name\": \"cuBLAS SGEMM FP32\", \"latency_ms\": %.6f, \"gflops\": %.6f },\n",
+           cublas_ms, cublas_gflops);
+    printf("  \"results\": [\n");
+    for (int i = 0; i < 5; ++i) {
+        printf("    { \"kernel_id\": \"K%d\", \"name\": \"%s\", \"input_precision\": \"%s\", \"accumulation_precision\": \"FP32\", \"latency_ms\": %.6f, \"gflops\": %.6f, \"pct_of_cublas\": %.4f, \"validation\": { \"frobenius_relative_error\": %.10e, \"max_absolute_error\": %.10e, \"passed\": %s } }%s\n",
+               i, kernel_names[i], input_precision[i], kernel_ms[i], kernel_gflops[i],
+               kernel_pct[i], validation[i].frobenius_relative_error,
+               validation[i].max_absolute_error, validation[i].passed ? "true" : "false",
+               i == 4 ? "" : ",");
+    }
+    printf("  ]\n");
+    printf("}\n");
     printf("BENCHMARK_JSON_END\n");
 
     CUDA_CHECK(cudaEventDestroy(ev_start));
     CUDA_CHECK(cudaEventDestroy(ev_stop));
     cudaFree(d_A); cudaFree(d_B); cudaFree(d_C);
     cudaFree(d_A_half); cudaFree(d_B_half);
+    free(h_reference); free(h_validation);
     free(h_A); free(h_B);
     return 0;
 }
