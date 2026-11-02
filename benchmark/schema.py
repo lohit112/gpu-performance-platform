@@ -31,6 +31,9 @@ def validate_benchmark(data: dict[str, Any]) -> None:
         value = metadata.get(key)
         if type(value) is not int or value <= 0:
             raise BenchmarkSchemaError(f"metadata.{key} must be a positive integer.")
+    if "fp16_input_conversion_ms" in metadata:
+        _nonnegative(metadata["fp16_input_conversion_ms"],
+                     "metadata.fp16_input_conversion_ms")
     shape = metadata.get("shape")
     if shape is not None:
         if not isinstance(shape, dict):
