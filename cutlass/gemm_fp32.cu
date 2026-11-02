@@ -183,19 +183,22 @@ int main() {
     std::printf("  \"schema_version\": 1,\n");
     std::printf("  \"metadata\": {\"backend\":\"cutlass\",\"gpu_name\":\"%s\","
                 "\"compute_capability\":\"%d.%d\",\"matrix_size\":%d,"
+                "\"shape\":{\"M\":%d,\"N\":%d,\"K\":%d},\"layout\":\"row_major\","
                 "\"warmup_iterations\":%d,\"timed_iterations\":%d,"
                 "\"cuda_runtime_version\":%d,\"cuda_driver_version\":%d,"
                 "\"cutlass_revision\":\"%s\"},\n",
                 properties.name, properties.major, properties.minor,
-                M, WARMUP, ITERATIONS, runtime_version, driver_version, CUTLASS_REVISION,
-                M, N, K);
+                M, M, N, K, WARMUP, ITERATIONS, runtime_version, driver_version,
+                CUTLASS_REVISION);
     std::printf("  \"reference\": {\"name\":\"cuBLAS SGEMM FP32\","
-                "\"latency_ms\":%.6f,\"gflops\":%.6f},\n",
+                "\"input_precision\":\"FP32\",\"accumulation_precision\":\"FP32\","
+                "\"output_precision\":\"FP32\",\"latency_ms\":%.6f,\"gflops\":%.6f},\n",
                 reference_ms, reference_gflops);
     std::printf("  \"results\": [{\"kernel_id\":\"CUTLASS_FP32\","
                 "\"name\":\"CUTLASS device::Gemm FP32 SIMT\","
                 "\"input_precision\":\"FP32\",\"accumulation_precision\":\"FP32\","
-                "\"latency_ms\":%.6f,\"gflops\":%.6f,\"pct_of_cublas\":%.4f,"
+                "\"output_precision\":\"FP32\",\"latency_ms\":%.6f,"
+                "\"gflops\":%.6f,\"pct_of_cublas\":%.4f,"
                 "\"validation\":{\"frobenius_relative_error\":%.10e,"
                 "\"max_absolute_error\":%.10e,\"passed\":true}}]\n",
                 latency_ms, cutlass_gflops,
