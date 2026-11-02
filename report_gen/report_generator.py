@@ -261,7 +261,7 @@ class ReportGenerator:
                 "### Measured GEMM DRAM traffic and arithmetic intensity",
                 "",
                 "| Kernel | Input / accumulation | DRAM read (MiB) | DRAM write (MiB) | Total DRAM (MiB) | Arithmetic intensity (FLOP/byte) | Benchmark GFLOP/s |",
-                "|---|---:|---:|---:|---:|---:|",
+                "|---|---|---:|---:|---:|---:|---:|",
             ])
             for row in self.empirical_roofline_rows:
                 lines.append(
