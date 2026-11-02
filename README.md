@@ -123,7 +123,7 @@ Requirements:
 For a Tesla T4 (compute capability 7.5):
 
 ~~~bash
-python -m benchmark.runner --arch sm_75 --size 4096
+python -m benchmark.runner --arch sm_75 --size 4096 --warmup 5 --iterations 20
 ~~~
 
 Equivalent direct compile command:
