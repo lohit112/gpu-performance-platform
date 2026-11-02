@@ -251,6 +251,14 @@ identifiers, and raw CSV rows where metric names are columns. It tracks which me
 actually collected; missing counters are shown as unavailable rather than as
 measured zero. Metric availability varies by architecture and Nsight version.
 
+When both `dram__bytes_read.sum` and `dram__bytes_write.sum` are present, the
+report joins those counters to the corresponding K0–K4 benchmark result and
+derives GEMM arithmetic intensity as `2*M*N*K / (DRAM read bytes + DRAM write bytes)`.
+It keeps the CUDA-event GFLOP/s measurement separate from the Nsight byte counters,
+and omits the derived value when either counter or the matching kernel is absent.
+DRAM counters are observed at the memory controllers and may include traffic from
+other GPU clients; profile on an otherwise idle GPU and inspect the native report.
+
 You can open the native .ncu-rep report with the Nsight Compute GUI.
 
 ### One-command Tesla T4 validation
