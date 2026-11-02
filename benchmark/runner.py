@@ -27,7 +27,7 @@ def _run(command: list[str], cwd: Path, timeout: int) -> subprocess.CompletedPro
 
 
 def run_cuda_benchmark(repo_root: str | Path, *, arch: str = "sm_75",
-                       size: int = 4096,
+                       size: int = 4096, warmup: int = 5, iterations: int = 20,
                        output_path: str | Path = "results/benchmarks/latest.json",
                        timeout_seconds: int = 900) -> dict[str, Any]:
     root = Path(repo_root).resolve()
@@ -43,6 +43,8 @@ def run_cuda_benchmark(repo_root: str | Path, *, arch: str = "sm_75",
             "CUDA GEMM size must be divisible by 16 because K3 uses aligned float4 "
             "accesses and K4 WMMA operates on complete 16x16 tiles."
         )
+    if warmup <= 0 or iterations <= 0:
+        raise ValueError("warmup and iterations must be positive integers.")
     nvcc = shutil.which("nvcc")
     if not nvcc:
         raise RuntimeError(
@@ -52,7 +54,10 @@ def run_cuda_benchmark(repo_root: str | Path, *, arch: str = "sm_75",
     build_dir = root / "build"
     build_dir.mkdir(parents=True, exist_ok=True)
     binary = build_dir / "matmul_bench"
-    flags = ["-O3", "-lineinfo", f"-arch={arch}", f"-DN={size}", "-lcublas"]
+    flags = [
+        "-O3", "-lineinfo", f"-arch={arch}", f"-DN={size}",
+        f"-DWARMUP={warmup}", f"-DTIMED={iterations}", "-lcublas",
+    ]
     compiler_version = _run([nvcc, "--version"], cwd=root, timeout=60)
     compiled = _run([nvcc, *flags[:-1], str(source), flags[-1], "-o", str(binary)],
                     cwd=root, timeout=timeout_seconds)
@@ -83,12 +88,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--arch", default="sm_75")
     parser.add_argument("--size", type=int, default=4096,
-                        help="Square GEMM dimension N (compiles with -DN=N).")
+                        help="Square GEMM dimension N (must be divisible by 16).")
+    parser.add_argument("--warmup", type=int, default=5)
+    parser.add_argument("--iterations", type=int, default=20)
     parser.add_argument("--output", default="results/benchmarks/latest.json")
     parser.add_argument("--timeout", type=int, default=900)
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     run_cuda_benchmark(root, arch=args.arch, size=args.size,
+                       warmup=args.warmup, iterations=args.iterations,
                        output_path=args.output, timeout_seconds=args.timeout)
     return 0
 
