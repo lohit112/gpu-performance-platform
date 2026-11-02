@@ -94,7 +94,9 @@ kernel fails validation.
 K4's input precision differs from the FP32 cuBLAS reference. Its reported
 GFLOP/s and percentage of FP32 cuBLAS are useful throughput indicators, but
 they are **not a precision-matched comparison**. Do not interpret the ratio as
-an apples-to-apples numerical efficiency metric.
+an apples-to-apples numerical efficiency metric. The artifact reports the
+FP32-to-FP16 input conversion time separately; K4's kernel latency excludes
+that preprocessing pass, so include it when analyzing end-to-end cost.
 
 ## Quick start
 
