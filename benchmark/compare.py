@@ -25,7 +25,7 @@ def collect_rows(paths: list[str | Path]) -> list[dict[str, Any]]:
                 "accumulation_precision": item["accumulation_precision"],
                 "latency_ms": item["latency_ms"],
                 "gflops": item["gflops"],
-                "pct_of_reference": item.get("pct_of_cublas", ""),
+                "pct_of_reference": item.get("pct_of_reference", item.get("pct_of_cublas", "")),
                 "validation_passed": item.get("validation", {}).get("passed", ""),
             })
     return rows
