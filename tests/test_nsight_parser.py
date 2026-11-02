@@ -11,6 +11,7 @@ def test_detail_csv_layout_parses_named_metric_rows(tmp_path):
     )
     report = NsightReport.from_csv(str(csv_path))
     assert len(report.kernels) == 1
+    assert len(report.kernels) == 1  # the raw CSV units row is not a kernel launch
     kernel = report.kernels[0]
     assert kernel.sm_throughput_pct == 72.5
     assert kernel.achieved_occupancy_pct == 48.0
