@@ -18,6 +18,8 @@ def test_report_derives_arithmetic_intensity_from_measured_dram_bytes(tmp_path):
         "kernel_id": "K0",
         "name": "K0: Naive",
         "input_precision": "FP32",
+        "accumulation_precision": "FP32",
+        "output_precision": "FP32",
         "latency_ms": 0.1,
         "gflops": 0.16,
     }]
@@ -60,6 +62,8 @@ def test_report_does_not_infer_arithmetic_intensity_without_both_dram_counters(t
         "kernel_id": "K0",
         "name": "K0: Naive",
         "input_precision": "FP32",
+        "accumulation_precision": "FP32",
+        "output_precision": "FP32",
         "latency_ms": 0.1,
         "gflops": 0.16,
     }]
