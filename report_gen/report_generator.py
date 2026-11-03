@@ -13,7 +13,10 @@ from typing import Any
 
 from benchmark.schema import load_benchmark
 from llm_profiler.inference_profiler import LLMInferenceProfiler, visualize_inference_profile
-from roofline.roofline_model import HardwareRoof, build_demo_workloads, plot_roofline, RooflineModel
+from roofline.roofline_model import (
+    HardwareRoof, build_demo_workloads, plot_roofline, RooflineModel,
+    plot_measured_roofline,
+)
 from profiling.nsight_profiler import NsightReport, visualize_nsight_report
 
 
@@ -40,6 +43,8 @@ class ReportGenerator:
         self.kernel_benchmarks = []
         self.benchmark_artifact: dict[str, Any] | None = None
         self.empirical_roofline_rows: list[dict[str, Any]] = []
+        self.empirical_roofline_chart: str | None = None
+        self.empirical_roofline_note = "Not generated."
 
     def run_roofline_analysis(self) -> None:
         print("[1/4] Generating illustrative roofline analysis...")
@@ -86,12 +91,37 @@ class ReportGenerator:
     def run_empirical_roofline_analysis(self) -> None:
         """Join real NCU DRAM bytes with the matching validated GEMM benchmark rows."""
         self.empirical_roofline_rows = []
+        self.empirical_roofline_chart = None
         if not self.nsight_report or not self.benchmark_artifact:
-            print("  Empirical arithmetic intensity unavailable: both a real NCU CSV "
-                  "and a validated CUDA benchmark artifact are required.")
+            self.empirical_roofline_note = (
+                "Both a real Nsight Compute CSV and a validated CUDA benchmark "
+                "artifact are required."
+            )
+            print("  Empirical arithmetic intensity unavailable: "
+                  + self.empirical_roofline_note)
             return
 
         meta = self.benchmark_artifact["metadata"]
+        benchmark_gpu = str(meta.get("gpu_name", "Unknown GPU"))
+        profiled_gpu = str(self.nsight_report.gpu_name)
+
+        def gpu_key(name: str) -> str:
+            return "".join(char for char in name.casefold() if char.isalnum()).removeprefix("nvidia")
+
+        benchmark_key = gpu_key(benchmark_gpu)
+        profiled_key = gpu_key(profiled_gpu)
+        if (
+            benchmark_key and profiled_key
+            and "unknown" not in benchmark_key
+            and "unknown" not in profiled_key
+            and benchmark_key != profiled_key
+        ):
+            self.empirical_roofline_note = (
+                f"GPU mismatch: benchmark artifact is {benchmark_gpu}, while the "
+                f"Nsight capture is {profiled_gpu}; measurements were not joined."
+            )
+            print("  " + self.empirical_roofline_note)
+            return
         shape = meta.get("shape") or {
             "M": meta["matrix_size"], "N": meta["matrix_size"], "K": meta["matrix_size"]
         }
@@ -142,11 +172,37 @@ class ReportGenerator:
             })
 
         if self.empirical_roofline_rows:
+            normalized_gpu = benchmark_gpu if "unknown" not in benchmark_key else profiled_gpu
+            gpu_lower = normalized_gpu.casefold()
+            configured_roof = (
+                HardwareRoof.t4_spec() if "t4" in gpu_lower else
+                HardwareRoof.a100_spec() if "a100" in gpu_lower else
+                HardwareRoof.h100_spec() if "h100" in gpu_lower else
+                None
+            )
+            chart_path = self.output_dir / "roofline_analysis_measured.png"
+            self.empirical_roofline_chart = plot_measured_roofline(
+                self.empirical_roofline_rows,
+                gpu_name=normalized_gpu,
+                output_path=str(chart_path),
+                configured_roof=configured_roof,
+            )
+            self.empirical_roofline_note = (
+                "Measured points combine NCU DRAM bytes with CUDA-event throughput. "
+                + (
+                    "Dashed ceilings are configured specification assumptions, not calibrated peaks."
+                    if configured_roof is not None
+                    else "No configured ceiling is available for this GPU; only measured points are shown."
+                )
+            )
             print("  Derived measured DRAM arithmetic intensity for "
                   f"{len(self.empirical_roofline_rows)} GEMM kernels.")
         else:
-            print("  No matched kernels had both DRAM read and write counters; "
-                  "the report will not invent arithmetic-intensity values.")
+            self.empirical_roofline_note = (
+                "No matched kernel had both DRAM read and write counters."
+            )
+            print("  " + self.empirical_roofline_note
+                  + " The report will not invent arithmetic-intensity values.")
 
     def generate_markdown(self, primary_gpu: str = "T4") -> str:
         lines = [
@@ -260,6 +316,10 @@ class ReportGenerator:
                 "",
                 "### Measured GEMM DRAM traffic and arithmetic intensity",
                 "",
+                f"![Measured GEMM roofline]({Path(self.empirical_roofline_chart).name})",
+                "",
+                f"{self.empirical_roofline_note}",
+                "",
                 "| Kernel | Input / accumulation | DRAM read (MiB) | DRAM write (MiB) | Total DRAM (MiB) | Arithmetic intensity (FLOP/byte) | Benchmark GFLOP/s |",
                 "|---|---|---:|---:|---:|---:|---:|",
             ])
@@ -284,6 +344,12 @@ class ReportGenerator:
                 "Caveat: DRAM counters are observed at the device memory controllers and "
                 "can include traffic from other GPU clients. Profile on an otherwise "
                 "idle GPU and inspect the native .ncu-rep before drawing conclusions.",
+            ])
+
+        else:
+            lines.extend([
+                "",
+                f"**Measured roofline not generated:** {self.empirical_roofline_note}",
             ])
 
         lines.extend(["", "## 4. LLM inference modeling", ""])
@@ -356,6 +422,12 @@ class ReportGenerator:
             ),
             "llm_provenance": "analytical_estimate",
             "empirical_roofline_rows": self.empirical_roofline_rows,
+            "empirical_roofline_chart": self.empirical_roofline_chart,
+            "empirical_roofline_note": self.empirical_roofline_note,
+            "empirical_roofline_provenance": (
+                "measured_ncu_dram_bytes_plus_cuda_event_throughput"
+                if self.empirical_roofline_rows else "unavailable"
+            ),
             "llm_profiles": [
                 {
                     "batch": p.batch_size,
@@ -370,7 +442,10 @@ class ReportGenerator:
         }
         json_path = self.output_dir / "gpu_research_report.json"
         json_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
-        return {"markdown": str(md_path), "html": str(html_path), "json": str(json_path)}
+        outputs = {"markdown": str(md_path), "html": str(html_path), "json": str(json_path)}
+        if self.empirical_roofline_chart:
+            outputs["empirical_roofline_chart"] = self.empirical_roofline_chart
+        return outputs
 
 
 if __name__ == "__main__":
