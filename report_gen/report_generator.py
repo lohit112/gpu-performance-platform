@@ -378,7 +378,7 @@ class ReportGenerator:
             "- Benchmark JSON records GPU identity, compute capability, CUDA versions, matrix size, "
             "warm-ups, timed iterations, precision, latency, throughput, and correctness.",
             "- Nsight output is included only for a real CSV or explicitly selected demo data.",
-            "- Roofline examples remain synthetic until hardware ceilings and DRAM bytes are measured.",
+            "- Demo roofline points remain illustrative; empirical GEMM points use matched Nsight DRAM bytes and CUDA-event throughput, while ceiling curves remain configured assumptions until calibrated.",
             "- LLM values remain estimates until checked against a real inference workload.",
             "",
         ])
