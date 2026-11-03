@@ -297,10 +297,12 @@ does not replace missing hardware results with demo values.
 python main.py --module roofline
 ~~~
 
-Current roofline workloads are illustrative demo points and hardware ceilings
-are configured assumptions. An empirical roofline requires measured compute
-and memory-bandwidth ceilings plus per-kernel FLOP counts and measured DRAM
-bytes. Do not present the demo chart as a measured T4 roofline.
+The existing multi-GPU chart uses illustrative demo points and configured
+hardware ceilings. The report also generates a separate measured GEMM chart
+when a validated CUDA artifact and matching Nsight CSV are supplied: its x-axis
+uses measured DRAM read/write bytes and its y-axis uses CUDA-event throughput.
+Any dashed ceiling curves are still configured assumptions, not calibrated
+hardware peaks. Do not present the demo chart as a measured T4 roofline.
 
 ## LLM inference modeling
 
@@ -370,7 +372,9 @@ gpu-performance-platform/
 - [ ] Capture real Nsight reports for K0–K4 and analyze observed bottlenecks.
 - [ ] Compile/run CUTLASS and Triton on the same T4 workload.
 - [ ] Repeat on A100/H100 and compare architecture behavior.
-- [ ] Add empirical roofline calibration and measured DRAM traffic.
+- [x] Derive GEMM arithmetic intensity from measured Nsight DRAM read/write counters.
+- [x] Plot measured GEMM points separately from configured ceiling assumptions.
+- [ ] Calibrate compute and memory-bandwidth ceilings on each target GPU.
 
 ## License
 
