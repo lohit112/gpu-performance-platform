@@ -432,6 +432,166 @@ def plot_roofline(
             print(f"  {line}")
 
 
+
+def plot_measured_roofline(
+    rows: list[dict],
+    gpu_name: str,
+    output_path: str,
+    configured_roof: HardwareRoof | None = None,
+) -> str:
+    """
+    Plot measured GEMM points from NCU DRAM bytes and CUDA-event throughput.
+
+    Points are empirical observations. Optional roof curves are configured
+    specification assumptions, not calibrated hardware ceilings; this function
+    deliberately does not classify kernels as memory- or compute-bound.
+    """
+    if not rows:
+        raise ValueError("At least one measured GEMM row is required.")
+
+    required = (
+        "kernel_id",
+        "input_precision",
+        "arithmetic_intensity_flop_per_byte",
+        "benchmark_gflops",
+    )
+    normalized = []
+    for index, row in enumerate(rows):
+        missing = [key for key in required if key not in row]
+        if missing:
+            raise ValueError(f"Measured roofline row {index} is missing: {missing}")
+        try:
+            intensity = float(row["arithmetic_intensity_flop_per_byte"])
+            gflops = float(row["benchmark_gflops"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Measured roofline row {index} has non-numeric values.") from exc
+        if not np.isfinite(intensity) or intensity <= 0:
+            raise ValueError(f"Measured roofline row {index} has invalid arithmetic intensity.")
+        if not np.isfinite(gflops) or gflops <= 0:
+            raise ValueError(f"Measured roofline row {index} has invalid benchmark GFLOP/s.")
+        normalized.append((row, intensity, gflops))
+
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(12, 8), facecolor="#0a0a0f")
+    ax.set_facecolor("#111118")
+    precisions = sorted({str(row["input_precision"]).upper() for row, _, _ in normalized})
+    marker_by_precision = {"FP32": "o", "FP16": "s", "BF16": "^"}
+    oi_values = [intensity for _, intensity, _ in normalized]
+    oi_min = max(1e-3, min(oi_values) / 2.0)
+    oi_max = max(oi_min * 10.0, max(oi_values) * 2.0)
+    oi_range = np.logspace(np.log10(oi_min), np.log10(oi_max), 400)
+
+    for precision in precisions:
+        selected = [
+            (row, intensity, gflops)
+            for row, intensity, gflops in normalized
+            if str(row["input_precision"]).upper() == precision
+        ]
+        ax.scatter(
+            [item[1] for item in selected],
+            [item[2] for item in selected],
+            s=90,
+            marker=marker_by_precision.get(precision, "D"),
+            edgecolors="white",
+            linewidths=0.7,
+            label=f"Measured {precision} input kernels",
+            zorder=5,
+        )
+        for row, intensity, gflops in selected:
+            ax.annotate(
+                str(row["kernel_id"]),
+                (intensity, gflops),
+                xytext=(6, 5),
+                textcoords="offset points",
+                color="#d8d8e8",
+                fontsize=9,
+            )
+
+        if configured_roof is not None:
+            if precision == "FP16" and configured_roof.peak_tensor_fp16_gflops > 0:
+                peak_gflops = configured_roof.peak_tensor_fp16_gflops
+                roof_label = "FP16 Tensor Core"
+            elif precision == "FP16":
+                peak_gflops = configured_roof.peak_fp16_gflops
+                roof_label = "FP16"
+            elif precision == "FP32":
+                peak_gflops = configured_roof.peak_fp32_gflops
+                roof_label = "FP32"
+            else:
+                continue
+            if peak_gflops > 0 and configured_roof.peak_bandwidth_gbps > 0:
+                ceiling = np.minimum(
+                    oi_range * configured_roof.peak_bandwidth_gbps,
+                    peak_gflops,
+                )
+                ax.loglog(
+                    oi_range,
+                    ceiling,
+                    linestyle="--",
+                    linewidth=1.6,
+                    label=(
+                        f"{roof_label} configured ceiling assumption "
+                        f"({peak_gflops / 1000:.1f} TFLOP/s, "
+                        f"{configured_roof.peak_bandwidth_gbps:.0f} GB/s)"
+                    ),
+                )
+
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlim(oi_min, oi_max)
+    positive_gflops = [gflops for _, _, gflops in normalized]
+    y_min = max(1e-3, min(positive_gflops) / 2.0)
+    y_max = max(y_min * 10.0, max(positive_gflops) * 2.0)
+    if configured_roof is not None:
+        max_peak = max(
+            configured_roof.peak_fp32_gflops,
+            configured_roof.peak_tensor_fp16_gflops,
+            configured_roof.peak_fp16_gflops,
+        )
+        y_max = max(y_max, max_peak * 1.2)
+    ax.set_ylim(y_min, y_max)
+    ax.set_xlabel("Measured arithmetic intensity (FLOP / DRAM byte)", color="#aaaacc")
+    ax.set_ylabel("CUDA-event benchmark throughput (GFLOP/s)", color="#aaaacc")
+    ax.set_title(
+        f"Measured GEMM Roofline Points — {gpu_name}",
+        color="#e8e8f0",
+        fontsize=13,
+        fontweight="bold",
+        pad=12,
+    )
+    ax.tick_params(colors="#aaaacc")
+    for spine in ax.spines.values():
+        spine.set_edgecolor("#333344")
+    ax.grid(True, which="both", color="#29293a", linewidth=0.6, alpha=0.7)
+    ax.legend(
+        fontsize=8,
+        framealpha=0.35,
+        facecolor="#111118",
+        edgecolor="#333344",
+        labelcolor="#d8d8e8",
+        loc="best",
+    )
+
+    if configured_roof is None:
+        footer = (
+            "Points: NCU DRAM read/write bytes + CUDA-event benchmark GFLOP/s. "
+            "No configured ceiling available for this GPU."
+        )
+    else:
+        footer = (
+            "Points are measured observations. Dashed lines are configured/specification "
+            "assumptions, not calibrated hardware ceilings."
+        )
+    fig.text(0.5, 0.015, footer, ha="center", color="#888899", fontsize=8)
+    fig.tight_layout(rect=[0, 0.045, 1, 1])
+    fig.savefig(output, dpi=180, bbox_inches="tight", facecolor="#0a0a0f")
+    plt.close(fig)
+    print(f"Measured roofline chart saved → {output}")
+    return str(output)
+
+
 if __name__ == '__main__':
     roofs = [
         HardwareRoof.t4_measured(),
