@@ -45,7 +45,7 @@ def test_report_derives_arithmetic_intensity_from_measured_dram_bytes(tmp_path):
     assert abs(row["arithmetic_intensity_flop_per_byte"] - (16.0 / 48.0)) < 1e-12
     assert row["benchmark_gflops"] == 0.16
     assert report.empirical_roofline_chart == str(tmp_path / "roofline_analysis_measured.png")
-    assert (tmp_path / "roofline_analysis_measured.png").read_bytes().startswith(b"\\x89PNG\\r\\n\\x1a\\n")
+    assert (tmp_path / "roofline_analysis_measured.png").read_bytes().startswith(bytes.fromhex("89504e470d0a1a0a"))
 
 
 def test_report_does_not_infer_arithmetic_intensity_without_both_dram_counters(tmp_path):
