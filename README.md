@@ -259,6 +259,14 @@ and omits the derived value when either counter or the matching kernel is absent
 DRAM counters are observed at the memory controllers and may include traffic from
 other GPU clients; profile on an otherwise idle GPU and inspect the native report.
 
+When the benchmark artifact and Nsight capture identify the same GPU, report
+generation also writes `roofline_analysis_measured.png`. Its points combine
+measured arithmetic intensity (NCU DRAM bytes) with CUDA-event benchmark
+throughput. FP32 and FP16-input kernels use distinct markers. Dashed roof curves
+are configured ceiling assumptions only; they are not calibrated peak measurements,
+and the chart does not automatically classify kernels as memory- or compute-bound.
+A GPU identity mismatch prevents joining the two data sources.
+
 You can open the native .ncu-rep report with the Nsight Compute GUI.
 
 ### One-command Tesla T4 validation
