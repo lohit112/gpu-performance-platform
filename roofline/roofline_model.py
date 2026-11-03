@@ -482,6 +482,21 @@ def plot_measured_roofline(
     oi_values = [intensity for _, intensity, _ in normalized]
     oi_min = max(1e-3, min(oi_values) / 2.0)
     oi_max = max(oi_min * 10.0, max(oi_values) * 2.0)
+    if configured_roof is not None and configured_roof.peak_bandwidth_gbps > 0:
+        configured_peaks = []
+        if "FP32" in precisions:
+            configured_peaks.append(configured_roof.peak_fp32_gflops)
+        if "FP16" in precisions:
+            configured_peaks.append(
+                configured_roof.peak_tensor_fp16_gflops
+                if configured_roof.peak_tensor_fp16_gflops > 0
+                else configured_roof.peak_fp16_gflops
+            )
+        for peak in configured_peaks:
+            if peak > 0:
+                ridge = peak / configured_roof.peak_bandwidth_gbps
+                oi_min = min(oi_min, ridge / 4.0)
+                oi_max = max(oi_max, ridge * 4.0)
     oi_range = np.logspace(np.log10(oi_min), np.log10(oi_max), 400)
 
     for precision in precisions:
