@@ -59,8 +59,9 @@ def run_cuda_benchmark(repo_root: str | Path, *, arch: str = "sm_75",
         f"-DWARMUP={warmup}", f"-DTIMED={iterations}", "-lcublas",
     ]
     compiler_version = _run([nvcc, "--version"], cwd=root, timeout=60)
-    compiled = _run([nvcc, *flags[:-1], str(source), flags[-1], "-o", str(binary)],
-                    cwd=root, timeout=timeout_seconds)
+    compile_command = [nvcc, *flags[:-1], str(source), flags[-1], "-o", str(binary)]
+    compiled = _run(compile_command, cwd=root, timeout=timeout_seconds)
+    binary_sha256 = hashlib.sha256(binary.read_bytes()).hexdigest()
     executed = _run([str(binary)], cwd=root, timeout=timeout_seconds)
     data = extract_embedded_json(executed.stdout)
     data.setdefault("metadata", {}).update({
@@ -72,6 +73,9 @@ def run_cuda_benchmark(repo_root: str | Path, *, arch: str = "sm_75",
         "compiler_version": compiler_version.stdout.strip(),
         "compiler_flags": flags,
         "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+        "binary_path": str(binary.relative_to(root)),
+        "binary_sha256": binary_sha256,
+        "compile_command": compile_command,
     })
     output = Path(output_path)
     if not output.is_absolute():

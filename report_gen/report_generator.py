@@ -7,6 +7,7 @@ for synthetic demo data when --demo-data was explicitly selected.
 from __future__ import annotations
 
 import datetime
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -28,12 +29,18 @@ class ReportGenerator:
         benchmark_json: str | None = "results/benchmarks/latest.json",
         nsight_csv: str | None = None,
         include_demo_data: bool = False,
+        nsight_metadata_json: str | None = None,
     ):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.author = author
         self.benchmark_json = Path(benchmark_json) if benchmark_json else None
         self.nsight_csv = Path(nsight_csv) if nsight_csv else None
+        self.nsight_metadata_json = (
+            Path(nsight_metadata_json) if nsight_metadata_json else
+            self.nsight_csv.with_suffix(".meta.json") if self.nsight_csv else None
+        )
+        self.nsight_metadata: dict[str, Any] | None = None
         self.include_demo_data = include_demo_data
         self.profiler = LLMInferenceProfiler(mfu_estimate=0.35)
         self.roofline_results = []
@@ -60,6 +67,14 @@ class ReportGenerator:
             if not self.nsight_csv.is_file():
                 raise FileNotFoundError(f"Nsight CSV not found: {self.nsight_csv}")
             self.nsight_report = NsightReport.from_csv(str(self.nsight_csv))
+            self.nsight_metadata = None
+            if self.nsight_metadata_json and self.nsight_metadata_json.is_file():
+                try:
+                    self.nsight_metadata = json.loads(
+                        self.nsight_metadata_json.read_text(encoding="utf-8")
+                    )
+                except (OSError, json.JSONDecodeError) as exc:
+                    print(f"  NCU provenance sidecar could not be read: {exc}")
         elif self.include_demo_data:
             self.nsight_report = NsightReport._demo_report()
         else:
@@ -88,6 +103,117 @@ class ReportGenerator:
             self.kernel_benchmarks = []
             print("  No benchmark JSON found; no synthetic GFLOPS values substituted.")
 
+    def _empirical_provenance_error(self) -> str | None:
+        """Return why an NCU/benchmark join is unsafe, or None when fully matched."""
+        sidecar = self.nsight_metadata
+        if not isinstance(sidecar, dict):
+            expected = (
+                str(self.nsight_metadata_json)
+                if self.nsight_metadata_json else "the CSV-adjacent .meta.json file"
+            )
+            return (
+                f"NCU provenance sidecar is missing ({expected}); empirical data was not joined. "
+                "Re-run scripts/profile_ncu.sh with the matching benchmark JSON as argument 5."
+            )
+        if sidecar.get("schema_version") != 1:
+            return "Unsupported or missing NCU provenance sidecar schema; empirical data was not joined."
+
+        capture = sidecar.get("capture") or {}
+        captured_benchmark = sidecar.get("benchmark") or {}
+        validation = sidecar.get("validation") or {}
+        meta = self.benchmark_artifact["metadata"]
+
+        def gpu_key(name: object) -> str:
+            value = "".join(
+                char for char in str(name or "").casefold() if char.isalnum()
+            ).removeprefix("nvidia")
+            return "" if not value or "unknown" in value else value
+
+        benchmark_gpu = str(meta.get("gpu_name", "Unknown GPU"))
+        capture_gpu = str(capture.get("gpu_name", "Unknown GPU"))
+        sidecar_gpu = str(captured_benchmark.get("gpu_name", "Unknown GPU"))
+        expected_gpu = gpu_key(benchmark_gpu)
+        if (
+            not expected_gpu
+            or gpu_key(capture_gpu) != expected_gpu
+            or gpu_key(sidecar_gpu) != expected_gpu
+        ):
+            return (
+                f"GPU mismatch: benchmark is {benchmark_gpu}, NCU capture is {capture_gpu}, "
+                f"and sidecar benchmark is {sidecar_gpu}; measurements were not joined."
+            )
+        report_gpu = str(self.nsight_report.gpu_name)
+        if gpu_key(report_gpu) and gpu_key(report_gpu) != expected_gpu:
+            return (
+                f"GPU mismatch: benchmark artifact is {benchmark_gpu}, while the "
+                f"Nsight CSV identifies {report_gpu}; measurements were not joined."
+            )
+
+        if self.benchmark_json is None or not self.benchmark_json.is_file():
+            return "Benchmark JSON file is unavailable; exact artifact provenance cannot be verified."
+        artifact_sha256 = hashlib.sha256(
+            self.benchmark_json.read_bytes()
+        ).hexdigest()
+        if captured_benchmark.get("artifact_sha256") != artifact_sha256:
+            return "Benchmark artifact mismatch: the NCU sidecar references a different benchmark JSON."
+
+        binary_sha256 = meta.get("binary_sha256")
+        if (
+            not isinstance(binary_sha256, str)
+            or not binary_sha256
+            or capture.get("binary_sha256") != binary_sha256
+            or captured_benchmark.get("binary_sha256") != binary_sha256
+        ):
+            return "Binary mismatch: benchmark and NCU capture do not identify the same executable SHA-256."
+
+        shape = meta.get("shape") or {
+            "M": meta.get("matrix_size"),
+            "N": meta.get("matrix_size"),
+            "K": meta.get("matrix_size"),
+        }
+        if captured_benchmark.get("shape") != shape:
+            return (
+                f"Shape mismatch: benchmark shape is {shape}, while the NCU sidecar records "
+                f"{captured_benchmark.get('shape')}; measurements were not joined."
+            )
+        for field in ("warmup_iterations", "timed_iterations"):
+            if captured_benchmark.get(field) != meta.get(field):
+                return (
+                    f"Timing protocol mismatch: {field} differs between benchmark artifact "
+                    "and NCU sidecar."
+                )
+
+        expected_precision = {
+            row["kernel_id"]: {
+                "input_precision": row["input_precision"],
+                "accumulation_precision": row["accumulation_precision"],
+                "output_precision": row["output_precision"],
+            }
+            for row in self.kernel_benchmarks
+        }
+        if captured_benchmark.get("precision_by_kernel") != expected_precision:
+            return "Precision mismatch: the NCU sidecar does not describe this benchmark's kernel precisions."
+
+        if self.nsight_csv is None or not self.nsight_csv.is_file():
+            return "Nsight CSV file is unavailable; exact capture provenance cannot be verified."
+        sidecar_csv = capture.get("csv_path")
+        if (
+            not isinstance(sidecar_csv, str)
+            or Path(sidecar_csv).resolve() != self.nsight_csv.resolve()
+        ):
+            return "NCU CSV mismatch: sidecar metadata belongs to a different profiler capture."
+
+        if validation.get("verified") is not True:
+            details = "; ".join(validation.get("errors") or [])
+            return (
+                "NCU capture provenance is unverified"
+                + (f": {details}" if details else "; required checks did not pass.")
+            )
+        checks = validation.get("checks")
+        if not isinstance(checks, dict) or not checks or any(value is not True for value in checks.values()):
+            return "NCU capture provenance checks are incomplete; empirical data was not joined."
+        return None
+
     def run_empirical_roofline_analysis(self) -> None:
         """Join real NCU DRAM bytes with the matching validated GEMM benchmark rows."""
         self.empirical_roofline_rows = []
@@ -99,6 +225,12 @@ class ReportGenerator:
             )
             print("  Empirical arithmetic intensity unavailable: "
                   + self.empirical_roofline_note)
+            return
+
+        provenance_error = self._empirical_provenance_error()
+        if provenance_error:
+            self.empirical_roofline_note = provenance_error
+            print("  " + self.empirical_roofline_note)
             return
 
         meta = self.benchmark_artifact["metadata"]
@@ -421,6 +553,10 @@ class ReportGenerator:
                 else "real_csv" if self.nsight_report else "unavailable"
             ),
             "llm_provenance": "analytical_estimate",
+            "nsight_capture_metadata": self.nsight_metadata,
+            "nsight_capture_validation": (
+                self.nsight_metadata.get("validation") if self.nsight_metadata else None
+            ),
             "empirical_roofline_rows": self.empirical_roofline_rows,
             "empirical_roofline_chart": self.empirical_roofline_chart,
             "empirical_roofline_note": self.empirical_roofline_note,

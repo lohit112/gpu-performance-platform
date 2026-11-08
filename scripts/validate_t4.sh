@@ -42,6 +42,11 @@ done
 # Stage 2: run all backends installed in this environment on the same 4096 GEMM.
 # CUDA is mandatory; CUTLASS and Triton are skipped when their dependencies are absent.
 bash scripts/run_full_benchmark.sh sm_75 4096
+LATEST_BENCHMARK_JSON="$(ls -t results/benchmarks/cuda_sm_75_n4096_*.json | head -n 1)"
+if [ -z "$LATEST_BENCHMARK_JSON" ]; then
+  echo "ERROR: the CUDA benchmark artifact was not found after the benchmark stage." >&2
+  exit 1
+fi
 
 # Stage 3: collect and parse real Nsight Compute counters when enabled.
 RUN_NCU="$(printenv RUN_NCU 2>/dev/null || echo 1)"
@@ -50,7 +55,8 @@ if [ "$RUN_NCU" = "1" ]; then
     build/matmul_bench \
     results/profiling \
     'matmul_.*' \
-    full
+    full \
+    "$LATEST_BENCHMARK_JSON"
   LATEST_NCU_CSV="$(ls -t results/profiling/*_profile.csv | head -n 1)"
   python main.py --module nsight \
     --nsight-csv "$LATEST_NCU_CSV" \

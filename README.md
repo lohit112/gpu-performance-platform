@@ -232,7 +232,8 @@ bash scripts/profile_ncu.sh \
   build/matmul_bench \
   results/profiling \
   matmul_register_tiled \
-  full
+  full \
+  results/benchmarks/latest.json
 ~~~
 
 The last argument selects an Nsight section set (basic, detailed, or
@@ -259,13 +260,24 @@ and omits the derived value when either counter or the matching kernel is absent
 DRAM counters are observed at the memory controllers and may include traffic from
 other GPU clients; profile on an otherwise idle GPU and inspect the native report.
 
-When the benchmark artifact and Nsight capture identify the same GPU, report
-generation also writes `roofline_analysis_measured.png`. Its points combine
-measured arithmetic intensity (NCU DRAM bytes) with CUDA-event benchmark
-throughput. FP32 and FP16-input kernels use distinct markers. Dashed roof curves
-are configured ceiling assumptions only; they are not calibrated peak measurements,
-and the chart does not automatically classify kernels as memory- or compute-bound.
-A GPU identity mismatch prevents joining the two data sources.
+Report generation writes `roofline_analysis_measured.png` only when the NCU
+capture has a matching `.meta.json` sidecar. The sidecar records the captured
+executable SHA-256, benchmark JSON SHA-256, GPU identity, M/N/K shape, timing
+protocol, per-kernel precision manifest, NCU command/version, native report, and
+CSV path. The report independently checks those values against the benchmark
+artifact and the selected CSV. A missing sidecar or any mismatch suppresses the
+empirical roofline rather than silently combining different runs. Captures made
+without the fifth benchmark-JSON argument are retained but marked unverified.
+
+The chart's x-coordinates use measured arithmetic intensity (NCU DRAM bytes) and
+y-coordinates use CUDA-event benchmark throughput. FP32 and FP16-input kernels
+use distinct markers. Dashed roof curves are configured ceiling assumptions only;
+they are not calibrated peak measurements, and the chart does not automatically
+classify kernels as memory- or compute-bound.
+
+Each successful CUDA benchmark artifact records the SHA-256 of the compiled
+executable. The NCU sidecar builder is CPU-testable and can be run directly with
+`python -m profiling.capture_metadata --help`.
 
 You can open the native .ncu-rep report with the Nsight Compute GUI.
 
@@ -346,7 +358,8 @@ gpu-performance-platform/
 ├── triton/
 │   └── matmul.py
 ├── profiling/
-│   └── nsight_profiler.py
+│   ├── nsight_profiler.py
+│   └── capture_metadata.py
 ├── roofline/
 │   └── roofline_model.py
 ├── llm_profiler/
