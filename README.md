@@ -281,6 +281,17 @@ executable. The NCU sidecar builder is CPU-testable and can be run directly with
 
 You can open the native .ncu-rep report with the Nsight Compute GUI.
 
+### Run the T4 validation in Colab
+
+For a guided run on a hosted T4 runtime, open the
+[**Tesla T4 validation notebook in Google Colab**](https://colab.research.google.com/github/lohit112/gpu-performance-platform/blob/v2/benchmark-framework-foundation/notebooks/t4_validation_colab.ipynb).
+Select a T4 GPU runtime before running all cells. The notebook pins the source
+commit, checks the GPU model and compute capability, runs the CUDA correctness
+and timing benchmark, attempts Compute Sanitizer and Nsight Compute, and packages
+the generated artifacts and logs into a ZIP for review. Tools unavailable or
+blocked by the hosted runtime are explicitly marked skipped/failed; they are
+never reported as successful hardware checks.
+
 ### One-command Tesla T4 validation
 
 On a Tesla T4 environment with `nvcc`, `compute-sanitizer`, and (optionally)
