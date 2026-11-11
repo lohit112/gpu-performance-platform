@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field, asdict
+from pathlib import Path
 from typing import Optional
 import numpy as np
 import matplotlib
@@ -43,9 +44,10 @@ matplotlib.rcParams['font.family'] = 'DejaVu Sans'
 @dataclass
 class HardwareRoof:
     """
-    Measured hardware ceilings for one GPU.
-    These should come from calibration kernels, not spec sheets.
-    We include spec sheet values as an upper bound for comparison.
+    Configured hardware ceiling assumptions used by the roofline model.
+
+    These values are illustrative unless they are replaced with measurements
+    from calibration kernels on the exact GPU under test.
     """
     gpu_name:               str
     # Peak compute (measured, not spec) in GFLOPS
@@ -69,16 +71,21 @@ class HardwareRoof:
                 self.ridge_point_tensor = (self.peak_tensor_fp16_gflops * 1e9) / (self.peak_bandwidth_gbps * 1e9)
 
     @classmethod
-    def t4_measured(cls) -> 'HardwareRoof':
-        """T4 GPU — measured values from our benchmarks (not spec sheet)."""
+    def t4_spec(cls) -> 'HardwareRoof':
+        """Tesla T4 illustrative ceiling configuration; not measured roofline data."""
         return cls(
-            gpu_name='Tesla T4',
+            gpu_name='Tesla T4 (configured ceiling)',
             peak_fp32_gflops=7_200,
             peak_fp16_gflops=58_000,
             peak_bandwidth_gbps=280,
             peak_fp8_gflops=116_000,
             peak_tensor_fp16_gflops=58_000,
         )
+
+    @classmethod
+    def t4_measured(cls) -> 'HardwareRoof':
+        """Deprecated compatibility alias; returns configured ceilings, not measurements."""
+        return cls.t4_spec()
 
     @classmethod
     def a100_spec(cls) -> 'HardwareRoof':
@@ -259,44 +266,25 @@ class RooflineModel:
 
 def build_demo_workloads() -> list[KernelPoint]:
     """
-    Representative workloads across the roofline spectrum.
+    Synthetic points used only to demonstrate roofline plotting and classification.
 
-    All values are physically consistent with T4 hardware ceilings
-    (achieved_gflops <= min(OI * peak_bandwidth_gbps, peak_compute_gflops)).
-
-    T4 reference: FP32 peak = 7,200 GFLOPS, FP16 TC peak = 58,000 GFLOPS,
-    HBM bandwidth = 280 GB/s.  Ridge points: FP32 = 25.7, FP16 TC = 207 FLOP/B.
-
-    NOTE — naive GEMM OI correction:
-      Textbook OI for NxN GEMM = 2N^3 FLOPs / (2N^3 * 4 bytes) = 0.25 FLOP/Byte.
-      The old demo used OI=1.0 and achieved=520 GFLOPS, both of which exceeded the
-      BW ceiling (280 GFLOPS), producing a physically impossible negative gap.
-      Corrected values match ~65 GFLOPS observed on T4 for naive N=4096 GEMM.
-
-    WMMA OI correction:
-      OI=128 < ridge_tensor=207, so WMMA is memory-bound on the TC roof.
-      Ceiling = 128 * 280 = 35,840 GFLOPS. Old demo used 52,000 (above ceiling).
-      Corrected to 33,000 GFLOPS (~92% of BW ceiling, realistic for WMMA).
+    These values are NOT measured by the current CUDA executable and must never
+    be presented as empirical K0-K4 benchmark results. Replace them with points
+    derived from a validated benchmark artifact and measured DRAM bytes for an
+    empirical roofline study.
     """
     return [
-        # GEMM family — memory→compute transition as OI rises
-        KernelPoint("matmul_naive K0",       achieved_gflops=65,     arithmetic_intensity=0.25, precision='fp32', category='GEMM'),
-        KernelPoint("matmul_shmem K1",       achieved_gflops=5_800,  arithmetic_intensity=32.0, precision='fp32', category='GEMM'),
-        KernelPoint("matmul_reg K2",         achieved_gflops=6_900,  arithmetic_intensity=64.0, precision='fp32', category='GEMM'),
-        KernelPoint("matmul_wmma K4",        achieved_gflops=33_000, arithmetic_intensity=128,  precision='fp16', category='GEMM'),
-
-        # LLM workloads
-        KernelPoint("attention_prefill",     achieved_gflops=6_200,  arithmetic_intensity=85.0, precision='fp16', category='Attention'),
-        KernelPoint("attention_decode_bs1",  achieved_gflops=105,    arithmetic_intensity=0.4,  precision='fp16', category='Attention'),
-        KernelPoint("attention_decode_bs16", achieved_gflops=1_600,  arithmetic_intensity=6.5,  precision='fp16', category='Attention'),
-
-        # Bandwidth-bound ops
-        KernelPoint("elementwise_ReLU",      achieved_gflops=62,     arithmetic_intensity=0.25, precision='fp32', category='BW'),
-        KernelPoint("layer_norm",            achieved_gflops=125,    arithmetic_intensity=0.5,  precision='fp32', category='BW'),
-        KernelPoint("embedding_lookup",      achieved_gflops=22,     arithmetic_intensity=0.1,  precision='fp32', category='BW'),
-
-        # Conv (between BW and compute)
-        KernelPoint("conv2d_3x3",            achieved_gflops=4_100,  arithmetic_intensity=15.0, precision='fp32', category='Conv'),
+        KernelPoint("DEMO K0 naive GEMM", achieved_gflops=65, arithmetic_intensity=0.25, precision="fp32", category="GEMM"),
+        KernelPoint("DEMO K1 shared-memory GEMM", achieved_gflops=5_800, arithmetic_intensity=32.0, precision="fp32", category="GEMM"),
+        KernelPoint("DEMO K2 register-tiled GEMM", achieved_gflops=6_900, arithmetic_intensity=64.0, precision="fp32", category="GEMM"),
+        KernelPoint("DEMO K4 WMMA GEMM", achieved_gflops=33_000, arithmetic_intensity=128.0, precision="fp16", category="GEMM"),
+        KernelPoint("DEMO attention prefill", achieved_gflops=6_200, arithmetic_intensity=85.0, precision="fp16", category="Attention"),
+        KernelPoint("DEMO attention decode batch 1", achieved_gflops=105, arithmetic_intensity=0.4, precision="fp16", category="Attention"),
+        KernelPoint("DEMO attention decode batch 16", achieved_gflops=1_600, arithmetic_intensity=6.5, precision="fp16", category="Attention"),
+        KernelPoint("DEMO ReLU", achieved_gflops=62, arithmetic_intensity=0.25, precision="fp32", category="BW"),
+        KernelPoint("DEMO layer normalization", achieved_gflops=125, arithmetic_intensity=0.5, precision="fp32", category="BW"),
+        KernelPoint("DEMO embedding lookup", achieved_gflops=22, arithmetic_intensity=0.1, precision="fp32", category="BW"),
+        KernelPoint("DEMO convolution 3x3", achieved_gflops=4_100, arithmetic_intensity=15.0, precision="fp32", category="Conv"),
     ]
 
 
@@ -443,6 +431,181 @@ def plot_roofline(
               f"{w.achieved_gflops:.0f} GFLOPS | gap={w.performance_gap_pct:.0f}%")
         for line in model.generate_optimization_advice(w):
             print(f"  {line}")
+
+
+
+def plot_measured_roofline(
+    rows: list[dict],
+    gpu_name: str,
+    output_path: str,
+    configured_roof: HardwareRoof | None = None,
+) -> str:
+    """
+    Plot measured GEMM points from NCU DRAM bytes and CUDA-event throughput.
+
+    Points are empirical observations. Optional roof curves are configured
+    specification assumptions, not calibrated hardware ceilings; this function
+    deliberately does not classify kernels as memory- or compute-bound.
+    """
+    if not rows:
+        raise ValueError("At least one measured GEMM row is required.")
+
+    required = (
+        "kernel_id",
+        "input_precision",
+        "arithmetic_intensity_flop_per_byte",
+        "benchmark_gflops",
+    )
+    normalized = []
+    for index, row in enumerate(rows):
+        missing = [key for key in required if key not in row]
+        if missing:
+            raise ValueError(f"Measured roofline row {index} is missing: {missing}")
+        try:
+            intensity = float(row["arithmetic_intensity_flop_per_byte"])
+            gflops = float(row["benchmark_gflops"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Measured roofline row {index} has non-numeric values.") from exc
+        if not np.isfinite(intensity) or intensity <= 0:
+            raise ValueError(f"Measured roofline row {index} has invalid arithmetic intensity.")
+        if not np.isfinite(gflops) or gflops <= 0:
+            raise ValueError(f"Measured roofline row {index} has invalid benchmark GFLOP/s.")
+        normalized.append((row, intensity, gflops))
+
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(12, 8), facecolor="#0a0a0f")
+    ax.set_facecolor("#111118")
+    precisions = sorted({str(row["input_precision"]).upper() for row, _, _ in normalized})
+    marker_by_precision = {"FP32": "o", "FP16": "s", "BF16": "^"}
+    oi_values = [intensity for _, intensity, _ in normalized]
+    oi_min = max(1e-3, min(oi_values) / 2.0)
+    oi_max = max(oi_min * 10.0, max(oi_values) * 2.0)
+    if configured_roof is not None and configured_roof.peak_bandwidth_gbps > 0:
+        configured_peaks = []
+        if "FP32" in precisions:
+            configured_peaks.append(configured_roof.peak_fp32_gflops)
+        if "FP16" in precisions:
+            configured_peaks.append(
+                configured_roof.peak_tensor_fp16_gflops
+                if configured_roof.peak_tensor_fp16_gflops > 0
+                else configured_roof.peak_fp16_gflops
+            )
+        for peak in configured_peaks:
+            if peak > 0:
+                ridge = peak / configured_roof.peak_bandwidth_gbps
+                oi_min = min(oi_min, ridge / 4.0)
+                oi_max = max(oi_max, ridge * 4.0)
+    oi_range = np.logspace(np.log10(oi_min), np.log10(oi_max), 400)
+
+    for precision in precisions:
+        selected = [
+            (row, intensity, gflops)
+            for row, intensity, gflops in normalized
+            if str(row["input_precision"]).upper() == precision
+        ]
+        ax.scatter(
+            [item[1] for item in selected],
+            [item[2] for item in selected],
+            s=90,
+            marker=marker_by_precision.get(precision, "D"),
+            edgecolors="white",
+            linewidths=0.7,
+            label=f"Measured {precision} input kernels",
+            zorder=5,
+        )
+        for row, intensity, gflops in selected:
+            ax.annotate(
+                str(row["kernel_id"]),
+                (intensity, gflops),
+                xytext=(6, 5),
+                textcoords="offset points",
+                color="#d8d8e8",
+                fontsize=9,
+            )
+
+        if configured_roof is not None:
+            if precision == "FP16" and configured_roof.peak_tensor_fp16_gflops > 0:
+                peak_gflops = configured_roof.peak_tensor_fp16_gflops
+                roof_label = "FP16 Tensor Core"
+            elif precision == "FP16":
+                peak_gflops = configured_roof.peak_fp16_gflops
+                roof_label = "FP16"
+            elif precision == "FP32":
+                peak_gflops = configured_roof.peak_fp32_gflops
+                roof_label = "FP32"
+            else:
+                continue
+            if peak_gflops > 0 and configured_roof.peak_bandwidth_gbps > 0:
+                ceiling = np.minimum(
+                    oi_range * configured_roof.peak_bandwidth_gbps,
+                    peak_gflops,
+                )
+                ax.loglog(
+                    oi_range,
+                    ceiling,
+                    linestyle="--",
+                    linewidth=1.6,
+                    label=(
+                        f"{roof_label} configured ceiling assumption "
+                        f"({peak_gflops / 1000:.1f} TFLOP/s, "
+                        f"{configured_roof.peak_bandwidth_gbps:.0f} GB/s)"
+                    ),
+                )
+
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlim(oi_min, oi_max)
+    positive_gflops = [gflops for _, _, gflops in normalized]
+    y_min = max(1e-3, min(positive_gflops) / 2.0)
+    y_max = max(y_min * 10.0, max(positive_gflops) * 2.0)
+    if configured_roof is not None:
+        max_peak = max(
+            configured_roof.peak_fp32_gflops,
+            configured_roof.peak_tensor_fp16_gflops,
+            configured_roof.peak_fp16_gflops,
+        )
+        y_max = max(y_max, max_peak * 1.2)
+    ax.set_ylim(y_min, y_max)
+    ax.set_xlabel("Measured arithmetic intensity (FLOP / DRAM byte)", color="#aaaacc")
+    ax.set_ylabel("CUDA-event benchmark throughput (GFLOP/s)", color="#aaaacc")
+    ax.set_title(
+        f"Measured GEMM Roofline Points — {gpu_name}",
+        color="#e8e8f0",
+        fontsize=13,
+        fontweight="bold",
+        pad=12,
+    )
+    ax.tick_params(colors="#aaaacc")
+    for spine in ax.spines.values():
+        spine.set_edgecolor("#333344")
+    ax.grid(True, which="both", color="#29293a", linewidth=0.6, alpha=0.7)
+    ax.legend(
+        fontsize=8,
+        framealpha=0.35,
+        facecolor="#111118",
+        edgecolor="#333344",
+        labelcolor="#d8d8e8",
+        loc="best",
+    )
+
+    if configured_roof is None:
+        footer = (
+            "Points: NCU DRAM read/write bytes + CUDA-event benchmark GFLOP/s. "
+            "No configured ceiling available for this GPU."
+        )
+    else:
+        footer = (
+            "Points are measured observations. Dashed lines are configured/specification "
+            "assumptions, not calibrated hardware ceilings."
+        )
+    fig.text(0.5, 0.015, footer, ha="center", color="#888899", fontsize=8)
+    fig.tight_layout(rect=[0, 0.045, 1, 1])
+    fig.savefig(output, dpi=180, bbox_inches="tight", facecolor="#0a0a0f")
+    plt.close(fig)
+    print(f"Measured roofline chart saved → {output}")
+    return str(output)
 
 
 if __name__ == '__main__':

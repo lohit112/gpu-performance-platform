@@ -11,19 +11,13 @@ WHY THIS IS THE MOST IMPORTANT MODULE IN THE UPGRADE:
   2. Knowing HOW to interpret them (stall reasons, occupancy limiters)
   3. Knowing HOW to generate ACTIONABLE recommendations from the numbers
 
-  This module does all three. An NVIDIA engineer reading this will know you've
-  actually used Nsight, not just read about it.
+  The module provides a CSV adapter and rule-based analysis. Synthetic demo
+  fixtures are explicitly marked and are not substitutes for real profiling.
 
 HOW TO RUN:
   # Step 1: Profile your binary with ncu
-  ncu --metrics sm__throughput.avg.pct_of_peak_sustained_elapsed,
-               sm__warps_active.avg.pct_of_peak_sustained_active,
-               l1tex__t_sector_hit_rate.pct,
-               lts__t_sector_hit_rate.pct,
-               smsp__warp_issue_stalled_mio_throttle_per_warp_active.pct,
-               smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct,
-               sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed
-       --csv --page raw -o my_profile ./matmul_bench > ncu_raw.csv
+  ncu --metrics <available-metric-list> -o matmul_profile.ncu-rep ./matmul_bench
+  ncu --import matmul_profile.ncu-rep --csv --page raw > ncu_raw.csv
 
   # Step 2: Pass the CSV to this module
   from profiling.nsight_profiler import NsightReport, visualize_nsight_report
@@ -41,7 +35,9 @@ METRICS GLOSSARY (the 12 that matter most):
   stall_barrier                   → % cycles at __syncthreads() waiting
   stall_math_throttle             → % cycles stalled on FP unit full pipeline
   pipe_tensor_cycles_active       → Tensor core utilization (%)
-  dram_throughput                 → % of peak HBM bandwidth used
+  dram_throughput                 → % of peak DRAM bandwidth used
+  dram__bytes_read.sum            → measured DRAM bytes read
+  dram__bytes_write.sum           → measured DRAM bytes written
   shared_efficiency               → Shared memory efficiency (% of ideal)
 """
 
@@ -61,6 +57,39 @@ import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 matplotlib.rcParams['font.family'] = 'DejaVu Sans'
+
+
+def _parse_metric_value(raw_value: object, unit: str = "",
+                        field_name: str = "") -> float | None:
+    """Parse a numeric Nsight value and normalize DRAM byte units to bytes."""
+    raw = str(raw_value).strip().replace(",", "")
+    match = re.fullmatch(
+        r"([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*([A-Za-zµμ%/]*)",
+        raw,
+    )
+    if not match:
+        return None
+    try:
+        value = float(match.group(1))
+    except ValueError:
+        return None
+    if not np.isfinite(value):
+        return None
+
+    metric_unit = (unit or match.group(2) or "").strip().lower()
+    metric_unit = re.sub(r"[\s_/]+", "", metric_unit)
+    if field_name in {"dram_bytes_read", "dram_bytes_write"}:
+        multipliers = {
+            "": 1.0, "b": 1.0, "byte": 1.0, "bytes": 1.0,
+            "kbyte": 1e3, "kbytes": 1e3, "kb": 1e3,
+            "mbyte": 1e6, "mbytes": 1e6, "mb": 1e6,
+            "gbyte": 1e9, "gbytes": 1e9, "gb": 1e9,
+            "kib": 1024.0, "mib": 1024.0 ** 2, "gib": 1024.0 ** 3,
+        }
+        if metric_unit not in multipliers or value < 0:
+            return None
+        value *= multipliers[metric_unit]
+    return value
 
 
 @dataclass
@@ -96,7 +125,9 @@ class NsightMetrics:
     # ── Memory hierarchy hit rates ───────────────────────────────────────────
     l1_hit_rate_pct:        float = 0.0   # L1 texture/load cache hit rate
     l2_hit_rate_pct:        float = 0.0   # L2 unified cache hit rate
-    dram_throughput_pct:    float = 0.0   # % of peak HBM bandwidth achieved
+    dram_throughput_pct:    float = 0.0   # % of peak DRAM bandwidth achieved
+    dram_bytes_read:        float = 0.0   # measured DRAM bytes read by this kernel
+    dram_bytes_write:       float = 0.0   # measured DRAM bytes written by this kernel
 
     # ── Shared memory ────────────────────────────────────────────────────────
     shmem_efficiency_pct:   float = 0.0   # efficiency = useful / total SHMEM ops
@@ -104,6 +135,7 @@ class NsightMetrics:
 
     # ── Registers ────────────────────────────────────────────────────────────
     registers_per_thread:   int   = 0     # register usage (too high → low occ.)
+    available_metrics:      list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -142,8 +174,10 @@ class NsightReport:
                 'l1_hit_rate_pct',
             'lts__t_sector_hit_rate.pct':
                 'l2_hit_rate_pct',
-            'l1tex__t_bytes.avg.pct_of_peak_sustained_elapsed':
+            'dram__throughput.avg.pct_of_peak_sustained_elapsed':
                 'dram_throughput_pct',
+            'dram__bytes_read.sum': 'dram_bytes_read',
+            'dram__bytes_write.sum': 'dram_bytes_write',
             'smsp__warp_issue_stalled_mio_throttle_per_warp_active.pct':
                 'stall_mio_throttle',
             'smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct':
@@ -158,6 +192,8 @@ class NsightReport:
                 'stall_short_scoreboard',
             'l1tex__data_pipe_lsu_wavefronts_mem_shared_bank_conflict.sum':
                 'shmem_bank_conflicts',
+            'launch__registers_per_thread':
+                'registers_per_thread',
         }
 
         try:
@@ -165,26 +201,57 @@ class NsightReport:
                 reader = csv.DictReader(f)
                 for row in reader:
                     kernel_name = row.get('Kernel Name', 'unknown').strip()
-                    if not kernel_name:
+                    if not kernel_name or kernel_name.lower() in {'units', 'unit'}:
                         continue
+
+                    device_name = (
+                        row.get('Device Name', '').strip()
+                        or row.get('GPU Name', '').strip()
+                        or row.get('Device', '').strip()
+                    )
+                    if device_name and gpu_name == "Unknown GPU":
+                        gpu_name = device_name
 
                     if kernel_name not in kernels:
                         kernels[kernel_name] = NsightMetrics(kernel_name=kernel_name)
 
+                    # Nsight CSV has two common layouts:
+                    #   (1) section/detail CSV: one row per metric, Metric Name/Value columns
+                    #   (2) raw page CSV: one row per kernel, metric names are CSV columns
                     metric_name = row.get('Metric Name', '').strip()
-                    metric_val  = row.get('Metric Value', '0').strip()
+                    if metric_name:
+                        candidates = [(metric_name, row.get('Metric Value', ''), row.get('Metric Unit', ''))]
+                    else:
+                        candidates = [(name, row.get(name, ''), '') for name in METRIC_MAP]
 
-                    if metric_name in METRIC_MAP:
-                        try:
-                            val = float(metric_val.replace(',', ''))
-                            setattr(kernels[kernel_name], METRIC_MAP[metric_name], val)
-                        except ValueError:
-                            pass
+                    for name, raw_value, metric_unit in candidates:
+                        if name not in METRIC_MAP or raw_value is None:
+                            continue
+                        field_name = METRIC_MAP[name]
+                        val = _parse_metric_value(raw_value, metric_unit, field_name)
+                        if val is None:
+                            continue
+                        if field_name == "registers_per_thread":
+                            setattr(kernels[kernel_name], field_name, int(round(val)))
+                        else:
+                            setattr(kernels[kernel_name], field_name, val)
+                        if field_name not in kernels[kernel_name].available_metrics:
+                            kernels[kernel_name].available_metrics.append(field_name)
 
         except FileNotFoundError:
-            print(f"[NsightReport] CSV not found: {csv_path}")
-            print("[NsightReport] Generating synthetic demo data for visualization...")
-            return cls._demo_report()
+            raise FileNotFoundError(f"Nsight Compute CSV not found: {csv_path}")
+
+        if not kernels:
+            raise ValueError(
+                f"No kernel rows were parsed from {csv_path}. "
+                "Check that this is an ncu --csv export."
+            )
+        mapped_count = sum(len(metric.available_metrics) for metric in kernels.values())
+        if mapped_count == 0:
+            raise ValueError(
+                f"Kernel rows were found in {csv_path}, but none of the configured "
+                "metric columns matched. Check metric names against this GPU/Nsight version."
+            )
 
         return cls(
             gpu_name=gpu_name,
@@ -196,9 +263,10 @@ class NsightReport:
     @classmethod
     def _demo_report(cls) -> 'NsightReport':
         """
-        Synthetic Nsight data matching expected T4 results.
-        Use this when no real GPU is available (e.g. development, CI).
-        Values are realistic and defensible in an interview.
+        Synthetic placeholder values used only to exercise charts and report layouts.
+
+        These values are not Nsight captures and must never be cited as measurements.
+        Use this method only after explicitly selecting demo mode.
         """
         return cls(
             gpu_name="Tesla T4 (demo data)",
@@ -273,16 +341,38 @@ class NsightReport:
         """
         recs = []
 
-        # Memory-bandwidth bound: high stall_long_scoreboard, high DRAM throughput
-        if kernel.stall_long_scoreboard > 40:
-            recs.append(
-                f"Memory bound: {kernel.stall_long_scoreboard:.0f}% warp cycles stalled "
-                f"waiting for L2/HBM. Fix: increase cache hit rate with tiling, "
-                f"or use prefetching (__ldg() for read-only data)."
-            )
+        # In a real CSV, analyze only counters that were actually collected.
+        # Empty availability metadata is reserved for the built-in demo fixtures.
+        def observed(field_name: str) -> bool:
+            return not kernel.available_metrics or field_name in kernel.available_metrics
+
+        # Long-scoreboard stalls indicate memory dependencies, but do not alone
+        # prove DRAM bandwidth saturation. Require a DRAM counter for that claim.
+        if observed('stall_long_scoreboard') and kernel.stall_long_scoreboard > 40:
+            if observed('dram_throughput_pct') and kernel.dram_throughput_pct >= 70:
+                recs.append(
+                    f"Likely DRAM-bandwidth constrained: {kernel.stall_long_scoreboard:.0f}% "
+                    f"long-scoreboard stalls and {kernel.dram_throughput_pct:.0f}% of peak "
+                    f"DRAM throughput. Investigate reuse, coalescing, cache behavior, and "
+                    f"whether tiling can reduce off-chip traffic."
+                )
+            elif observed('dram_throughput_pct'):
+                recs.append(
+                    f"Memory-latency/dependency pressure: {kernel.stall_long_scoreboard:.0f}% "
+                    f"long-scoreboard stalls, while DRAM throughput is only "
+                    f"{kernel.dram_throughput_pct:.0f}% of peak. Inspect cache misses, "
+                    f"access locality, and available parallelism before calling this "
+                    f"bandwidth-saturated."
+                )
+            else:
+                recs.append(
+                    f"High memory-dependency stalls: {kernel.stall_long_scoreboard:.0f}% "
+                    f"long-scoreboard stalls. DRAM throughput was not collected, so "
+                    f"bandwidth saturation cannot be concluded from this capture."
+                )
 
         # Low compute utilization
-        if kernel.sm_throughput_pct < 50:
+        if observed('sm_throughput_pct') and kernel.sm_throughput_pct < 50:
             recs.append(
                 f"Low SM utilization: {kernel.sm_throughput_pct:.0f}% of peak. "
                 f"SM is underloaded. Fix: increase tile size, increase batch size, "
@@ -290,7 +380,7 @@ class NsightReport:
             )
 
         # Barrier stalls — too many __syncthreads() or load imbalance
-        if kernel.stall_barrier > 25:
+        if observed('stall_barrier') and kernel.stall_barrier > 25:
             recs.append(
                 f"Barrier stalls: {kernel.stall_barrier:.0f}% cycles at __syncthreads(). "
                 f"Consider double-buffering (async pipeline) to overlap sync with compute: "
@@ -298,7 +388,7 @@ class NsightReport:
             )
 
         # Low L1 hit rate
-        if kernel.l1_hit_rate_pct < 30:
+        if observed('l1_hit_rate_pct') and kernel.l1_hit_rate_pct < 30:
             recs.append(
                 f"Poor L1 cache reuse: {kernel.l1_hit_rate_pct:.0f}% hit rate. "
                 f"Access pattern is not cache-friendly. Fix: use shared memory for "
@@ -306,7 +396,7 @@ class NsightReport:
             )
 
         # Bank conflicts in shared memory
-        if kernel.shmem_bank_conflicts > 1000:
+        if observed('shmem_bank_conflicts') and kernel.shmem_bank_conflicts > 1000:
             recs.append(
                 f"Shared memory bank conflicts: {kernel.shmem_bank_conflicts:.0f} total. "
                 f"Fix: pad SHMEM arrays by +1 column: float sA[TILE][TILE+1]. "
@@ -314,7 +404,8 @@ class NsightReport:
             )
 
         # Low occupancy with high register pressure
-        if kernel.achieved_occupancy_pct < 40 and kernel.registers_per_thread > 48:
+        if (observed('achieved_occupancy_pct') and observed('registers_per_thread')
+                and kernel.achieved_occupancy_pct < 40 and kernel.registers_per_thread > 48):
             recs.append(
                 f"Low occupancy (register pressure): {kernel.registers_per_thread} "
                 f"regs/thread limits active warps to {kernel.achieved_occupancy_pct:.0f}%. "
@@ -323,16 +414,18 @@ class NsightReport:
                 f"l1tex__t_sectors_pipe_lsu_mem_local_op_ld.sum"
             )
 
-        # Tensor cores not used when they should be
-        if kernel.tensor_core_pct < 10 and 'wmma' not in kernel.kernel_name.lower():
+        # A low Tensor Core counter is expected for an FP32 SIMT kernel.
+        # Treat it as a separate mixed-precision experiment, not a diagnosed bug.
+        if observed('tensor_core_pct') and kernel.tensor_core_pct < 10 and 'wmma' not in kernel.kernel_name.lower():
             recs.append(
-                f"🟢 OPPORTUNITY: Tensor core utilization is {kernel.tensor_core_pct:.0f}%. "
-                f"Convert this kernel to use WMMA (Volta+) or PTX-level tensor core ops "
-                f"for 4-8× more TFLOPS on FP16 workloads."
+                f"Tensor Core pipeline activity is {kernel.tensor_core_pct:.0f}%. "
+                f"This is expected for a conventional FP32 SIMT kernel. A separate "
+                f"FP16/BF16/TF32 Tensor Core variant may be worth testing if its "
+                f"precision and numerical-error budget are acceptable."
             )
 
         # Math throttle stalls — this is actually GOOD (compute-bound)
-        if kernel.stall_math_throttle > 40:
+        if observed('stall_math_throttle') and kernel.stall_math_throttle > 40:
             recs.append(
                 f"Compute-bound: {kernel.stall_math_throttle:.0f}% cycles stalled on "
                 f"FP pipeline full. This is the GOOD kind of stall — math units are busy. "
@@ -341,7 +434,14 @@ class NsightReport:
             )
 
         if not recs:
-            recs.append("No major bottlenecks detected. Kernel appears reasonably well-optimized.")
+            if kernel.available_metrics:
+                recs.append(
+                    "No configured recommendation threshold was triggered by the "
+                    f"{len(kernel.available_metrics)} counters collected. This is not "
+                    "proof that the kernel has no bottlenecks."
+                )
+            else:
+                recs.append("Synthetic demo fixture: no configured recommendation threshold was triggered.")
 
         return recs
 
@@ -381,6 +481,12 @@ def visualize_nsight_report(
     x       = np.arange(n)
     width   = 0.35
 
+    def metric_value(kernel, field_name):
+        # A value absent from the capture is not a measured zero.
+        if kernel.available_metrics and field_name not in kernel.available_metrics:
+            return np.nan
+        return getattr(kernel, field_name)
+
     def style(ax):
         ax.set_facecolor(SURFACE)
         ax.tick_params(colors='#8888aa', labelsize=8)
@@ -393,16 +499,19 @@ def visualize_nsight_report(
 
     # ── Panel A: SM + Tensor Core utilization ─────────────────────────────────
     ax = axes[0]
-    ax.bar(x - width/2, [k.sm_throughput_pct for k in kernels],
-           width, color='#3d9abf', alpha=0.85, label='SM Util %', zorder=3)
-    ax.bar(x + width/2, [k.tensor_core_pct for k in kernels],
-           width, color='#f5c842', alpha=0.85, label='Tensor Core %', zorder=3)
+    sm_values = [metric_value(k, 'sm_throughput_pct') for k in kernels]
+    tc_values = [metric_value(k, 'tensor_core_pct') for k in kernels]
+    ax.bar(x - width/2, sm_values, width, color='#3d9abf', alpha=0.85, label='SM Util %', zorder=3)
+    ax.bar(x + width/2, tc_values, width, color='#f5c842', alpha=0.85, label='Tensor Core %', zorder=3)
 
     for i, k in enumerate(kernels):
-        ax.text(i - width/2, k.sm_throughput_pct + 1.5, f'{k.sm_throughput_pct:.0f}%',
-                ha='center', va='bottom', color='#3d9abf', fontsize=7, fontweight='bold')
-        if k.tensor_core_pct > 1:
-            ax.text(i + width/2, k.tensor_core_pct + 1.5, f'{k.tensor_core_pct:.0f}%',
+        sm_value = sm_values[i]
+        tc_value = tc_values[i]
+        if np.isfinite(sm_value):
+            ax.text(i - width/2, sm_value + 1.5, f'{sm_value:.0f}%',
+                    ha='center', va='bottom', color='#3d9abf', fontsize=7, fontweight='bold')
+        if np.isfinite(tc_value) and tc_value > 1:
+            ax.text(i + width/2, tc_value + 1.5, f'{tc_value:.0f}%',
                     ha='center', va='bottom', color='#f5c842', fontsize=7, fontweight='bold')
 
     ax.set_xticks(x); ax.set_xticklabels(knames, color='#8888aa', fontsize=8)
@@ -413,22 +522,36 @@ def visualize_nsight_report(
 
     # ── Panel B: Warp stall breakdown ─────────────────────────────────────────
     ax = axes[1]
-    STALL_COLORS = {
-        'Long Scoreboard\n(HBM miss)': ('#e8503a', [k.stall_long_scoreboard for k in kernels]),
-        'MIO Throttle\n(mem queue)':   ('#f5c842', [k.stall_mio_throttle     for k in kernels]),
-        'Barrier\n(syncthreads)':      ('#bf8c3d', [k.stall_barrier           for k in kernels]),
-        'Math Throttle\n(FP full)':    ('#3abf7a', [k.stall_math_throttle    for k in kernels]),
-        'Not Selected\n(healthy)':     ('#4a4a6a', [k.stall_not_selected     for k in kernels]),
-    }
-    bottoms = np.zeros(n)
-    for label, (color, vals) in STALL_COLORS.items():
-        vals = np.array(vals)
-        ax.bar(x, vals, width=0.6, bottom=bottoms, color=color, alpha=0.85, label=label, zorder=3)
-        for i, (v, b) in enumerate(zip(vals, bottoms)):
-            if v > 5:
-                ax.text(i, b + v/2, f'{v:.0f}%', ha='center', va='center',
-                        color='white', fontsize=7, fontweight='bold')
-        bottoms += vals
+    stall_fields = [
+        'stall_long_scoreboard', 'stall_mio_throttle', 'stall_barrier',
+        'stall_math_throttle', 'stall_not_selected',
+    ]
+    stalls_complete = all(
+        not k.available_metrics or all(field in k.available_metrics for field in stall_fields)
+        for k in kernels
+    )
+    if stalls_complete:
+        STALL_COLORS = {
+            'Long Scoreboard\n(HBM miss)': ('#e8503a', [k.stall_long_scoreboard for k in kernels]),
+            'MIO Throttle\n(mem queue)':   ('#f5c842', [k.stall_mio_throttle for k in kernels]),
+            'Barrier\n(syncthreads)':      ('#bf8c3d', [k.stall_barrier for k in kernels]),
+            'Math Throttle\n(FP full)':    ('#3abf7a', [k.stall_math_throttle for k in kernels]),
+            'Not Selected\n(eligible)':   ('#4a4a6a', [k.stall_not_selected for k in kernels]),
+        }
+        bottoms = np.zeros(n)
+        for label, (color, vals) in STALL_COLORS.items():
+            vals = np.array(vals)
+            ax.bar(x, vals, width=0.6, bottom=bottoms, color=color, alpha=0.85, label=label, zorder=3)
+            for i, (v, b) in enumerate(zip(vals, bottoms)):
+                if v > 5:
+                    ax.text(i, b + v/2, f'{v:.0f}%', ha='center', va='center',
+                            color='white', fontsize=7, fontweight='bold')
+            bottoms += vals
+    else:
+        ax.text(0.5, 0.5, "Warp-stall counters were not collected\nin this Nsight capture.",
+                transform=ax.transAxes, ha='center', va='center',
+                color='#aaaacc', fontsize=10)
+        ax.set_xlim(-0.5, max(0.5, n - 0.5))
 
     ax.set_xticks(x); ax.set_xticklabels(knames, color='#8888aa', fontsize=8)
     ax.set_ylabel('% of Warp Cycles', fontsize=9)
@@ -440,26 +563,28 @@ def visualize_nsight_report(
 
     # ── Panel C: Memory hierarchy hit rates ───────────────────────────────────
     ax = axes[2]
-    ax.bar(x - width/2, [k.l1_hit_rate_pct for k in kernels],
-           width, color='#3d6abf', alpha=0.85, label='L1 Hit Rate %', zorder=3)
-    ax.bar(x + width/2, [k.l2_hit_rate_pct for k in kernels],
-           width, color='#76b900', alpha=0.85, label='L2 Hit Rate %', zorder=3)
+    l1_values = [metric_value(k, 'l1_hit_rate_pct') for k in kernels]
+    l2_values = [metric_value(k, 'l2_hit_rate_pct') for k in kernels]
+    dram_values = [metric_value(k, 'dram_throughput_pct') for k in kernels]
+    ax.bar(x - width/2, l1_values, width, color='#3d6abf', alpha=0.85, label='L1 Hit Rate %', zorder=3)
+    ax.bar(x + width/2, l2_values, width, color='#76b900', alpha=0.85, label='L2 Hit Rate %', zorder=3)
 
-    # Overlay: DRAM throughput as line
+    # Overlay only measured DRAM throughput values.
     ax2_twin = ax.twinx()
-    ax2_twin.plot(x, [k.dram_throughput_pct for k in kernels],
-                  'o--', color='#e8503a', linewidth=2, markersize=7,
-                  label='DRAM BW %', zorder=5)
+    ax2_twin.plot(x, dram_values, 'o--', color='#e8503a', linewidth=2,
+                  markersize=7, label='DRAM BW %', zorder=5)
     ax2_twin.set_ylabel('DRAM BW % of Peak', color='#e8503a', fontsize=9)
     ax2_twin.tick_params(colors='#e8503a')
     ax2_twin.set_ylim(0, 110)
     for sp in ax2_twin.spines.values(): sp.set_edgecolor(BORDER)
 
-    for i, k in enumerate(kernels):
-        ax.text(i - width/2, k.l1_hit_rate_pct + 1.5, f'{k.l1_hit_rate_pct:.0f}%',
-                ha='center', va='bottom', color='#3d6abf', fontsize=7, fontweight='bold')
-        ax.text(i + width/2, k.l2_hit_rate_pct + 1.5, f'{k.l2_hit_rate_pct:.0f}%',
-                ha='center', va='bottom', color='#76b900', fontsize=7, fontweight='bold')
+    for i in range(n):
+        if np.isfinite(l1_values[i]):
+            ax.text(i - width/2, l1_values[i] + 1.5, f'{l1_values[i]:.0f}%',
+                    ha='center', va='bottom', color='#3d6abf', fontsize=7, fontweight='bold')
+        if np.isfinite(l2_values[i]):
+            ax.text(i + width/2, l2_values[i] + 1.5, f'{l2_values[i]:.0f}%',
+                    ha='center', va='bottom', color='#76b900', fontsize=7, fontweight='bold')
 
     ax.set_xticks(x); ax.set_xticklabels(knames, color='#8888aa', fontsize=8)
     ax.set_ylim(0, 110); ax.set_ylabel('Cache Hit Rate %', fontsize=9)
@@ -494,63 +619,73 @@ def visualize_nsight_report(
 
 def run_ncu_profiling(
     binary_path: str,
-    output_csv:  str = "ncu_raw.csv",
-    metrics:     list[str] = None,
+    output_csv: str = "ncu_raw.csv",
+    metrics: list[str] | None = None,
 ) -> str:
     """
-    Programmatically invoke ncu and collect results.
-    
-    Requires: NVIDIA Nsight Compute CLI (ncu) in PATH.
-    Requires: Sufficient privileges (sudo or /proc/sys/kernel/perf_event_paranoid <= 2)
-    
-    On Colab: ncu is available when using A100/H100 instances with CUDA toolkit.
-    On local: install from https://developer.nvidia.com/nsight-compute
+    Capture an Nsight Compute report, then export a clean raw-page CSV.
+
+    The native .ncu-rep is kept beside the CSV for inspection in ncu-ui.
+    Metric availability depends on GPU architecture and installed NCU version.
     """
+    from pathlib import Path
+
     if metrics is None:
         metrics = [
             "sm__throughput.avg.pct_of_peak_sustained_elapsed",
             "sm__warps_active.avg.pct_of_peak_sustained_active",
             "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed",
+            "dram__bytes_read.sum",
+            "dram__bytes_write.sum",
             "l1tex__t_sector_hit_rate.pct",
             "lts__t_sector_hit_rate.pct",
+            "dram__throughput.avg.pct_of_peak_sustained_elapsed",
+            "launch__registers_per_thread",
             "smsp__warp_issue_stalled_mio_throttle_per_warp_active.pct",
             "smsp__warp_issue_stalled_long_scoreboard_per_warp_active.pct",
-            "smsp__warp_issue_stalled_not_selected_per_warp_active.pct",
             "smsp__warp_issue_stalled_barrier_per_warp_active.pct",
             "smsp__warp_issue_stalled_math_throttle_per_warp_active.pct",
         ]
 
-    cmd = [
+    output_path = Path(output_csv)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    report_prefix = output_path.with_suffix("")
+    report_path = Path(str(report_prefix) + ".ncu-rep")
+
+    command = [
         "ncu",
         "--metrics", ",".join(metrics),
-        "--csv",
-        "--page", "raw",
-        "-o", output_csv.replace('.csv', ''),  # ncu adds .ncu-rep
+        "-o", str(report_prefix),
         binary_path,
     ]
-
-    print(f"Running: {' '.join(cmd)}")
+    print(f"Running: {' '.join(command)}")
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-        if result.returncode != 0:
-            print(f"ncu stderr: {result.stderr}")
-            raise RuntimeError(f"ncu failed with code {result.returncode}")
+        profile = subprocess.run(command, capture_output=True, text=True, timeout=900)
+        if profile.returncode != 0:
+            raise RuntimeError(
+                f"ncu profiling failed ({profile.returncode}): "
+                f"{profile.stderr.strip() or profile.stdout.strip()}"
+            )
 
-        # ncu outputs CSV to stdout with --csv flag
-        with open(output_csv, 'w') as f:
-            f.write(result.stdout)
-
-        print(f"ncu results written to {output_csv}")
-        return output_csv
-
-    except FileNotFoundError:
-        raise RuntimeError(
-            "ncu not found in PATH. Install NVIDIA Nsight Compute:\n"
-            "  https://developer.nvidia.com/nsight-compute\n"
-            "On Colab: ncu is available on A100 instances with:\n"
-            "  !pip install nvcc4jupyter"
+        export = subprocess.run(
+            ["ncu", "--import", str(report_path), "--csv", "--page", "raw"],
+            capture_output=True, text=True, timeout=300,
         )
+        if export.returncode != 0:
+            raise RuntimeError(
+                f"ncu CSV export failed ({export.returncode}): "
+                f"{export.stderr.strip() or export.stdout.strip()}"
+            )
+        output_path.write_text(export.stdout, encoding="utf-8")
+        print(f"Native Nsight report: {report_path}")
+        print(f"Raw Nsight CSV: {output_path}")
+        return str(output_path)
 
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "ncu was not found in PATH. Install NVIDIA Nsight Compute and ensure "
+            "the CLI is available in the profiling environment."
+        ) from exc
 
 if __name__ == '__main__':
     # Demo: generate synthetic Nsight report and visualize
