@@ -284,7 +284,7 @@ You can open the native .ncu-rep report with the Nsight Compute GUI.
 ### Run the T4 validation in Colab
 
 For a guided run on a hosted T4 runtime, open the
-[**Tesla T4 validation notebook in Google Colab**](https://colab.research.google.com/github/lohit112/gpu-performance-platform/blob/v2/benchmark-framework-foundation/notebooks/t4_validation_colab.ipynb).
+[**Tesla T4 validation notebook in Google Colab**](https://colab.research.google.com/github/lohit112/gpu-performance-platform/blob/290e5dfc6896b6d2321f71e35e8c404a47edde33/notebooks/t4_validation_colab.ipynb).
 Select a T4 GPU runtime before running all cells. The notebook pins the source
 commit, checks the GPU model and compute capability, runs the CUDA correctness
 and timing benchmark, attempts Compute Sanitizer and Nsight Compute, and packages
